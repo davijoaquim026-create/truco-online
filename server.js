@@ -88,7 +88,22 @@ io.on("connection", socket => {
     io.to(room.host).emit("guest_joined", {
       name: room.guestName
     });
+  if (room.lastState) {
+  const guestView = JSON.parse(JSON.stringify(room.lastState));
+
+  guestView.players = guestView.players.map(p => {
+    if (p.id === 1 || p.id === 3) return p;
+
+    return {
+      ...p,
+      cards: (p.cards || []).map(() => null)
+    };
   });
+
+  io.to(room.guest).emit("state", guestView);
+}
+
+});
 
   socket.on("state", snapshot => {
     const [code, room] = roomOf(socket);
