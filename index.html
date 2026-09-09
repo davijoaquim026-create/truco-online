@@ -205,7 +205,35 @@ box-shadow:inset 0 0 0 5px #2c170b,inset 0 0 60px #001d0f,0 25px 70px #000}
 </div>
 </div>
 
-<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
+<script>
+// Carregamento robusto do cliente Socket.IO: primeiro tenta o mesmo servidor
+// do jogo (mais confiável no Render) e só depois tenta a CDN.
+window.__socketIoReady = new Promise((resolve, reject) => {
+  if (typeof window.io === "function") { resolve(); return; }
+  const urls = [
+    "/socket.io/socket.io.js",
+    "https://cdn.socket.io/4.8.1/socket.io.min.js"
+  ];
+  let i = 0;
+  const tryNext = () => {
+    if (typeof window.io === "function") { resolve(); return; }
+    if (i >= urls.length) {
+      reject(new Error("Socket.IO não carregou. Verifique se o servidor está com Socket.IO ativo."));
+      return;
+    }
+    const s = document.createElement("script");
+    s.src = urls[i++];
+    s.async = false;
+    s.onload = () => {
+      if (typeof window.io === "function") resolve();
+      else tryNext();
+    };
+    s.onerror = tryNext;
+    document.head.appendChild(s);
+  };
+  tryNext();
+});
+</script>
 <script>
 "use strict";
 
@@ -1281,13 +1309,27 @@ function showJoinOnline(){
   setOnlineStatus("");
 }
 
-function ensureOnlineConnection(){
-  if(onlineSocket && onlineSocket.connected)return Promise.resolve();
-  return new Promise((resolve,reject)=>{
-    if(typeof io!=="function"){reject(new Error("Socket.IO não carregou."));return;}
-    onlineSocket=io("https://truco-online-x7hi.onrender.com",{transports:["websocket","polling"]});
-    onlineSocket.once("connect",resolve);
-    onlineSocket.once("connect_error",reject);
+async function ensureOnlineConnection(){
+  if(onlineSocket && onlineSocket.connected)return;
+  try{
+    await window.__socketIoReady;
+  }catch(e){
+    throw new Error("Socket.IO não carregou.");
+  }
+  if(typeof io!=="function")throw new Error("Socket.IO não carregou.");
+  await new Promise((resolve,reject)=>{
+    onlineSocket=io("https://truco-online-x7hi.onrender.com",{
+      transports:["websocket","polling"],
+      timeout:10000
+    });
+    const done=()=>{cleanup();resolve();};
+    const fail=(err)=>{cleanup();reject(err);};
+    const cleanup=()=>{
+      onlineSocket?.off("connect",done);
+      onlineSocket?.off("connect_error",fail);
+    };
+    onlineSocket.once("connect",done);
+    onlineSocket.once("connect_error",fail);
     onlineSocket.on("error",data=>setOnlineStatus(data?.message||"Erro na conexão."));
     onlineSocket.on("room_closed",()=>{
       setOnlineStatus("A sala foi encerrada.");
