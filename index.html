@@ -91,7 +91,7 @@ box-shadow:inset 0 0 0 5px #2c170b,inset 0 0 60px #001d0f,0 25px 70px #000}
 .winner{outline:3px solid #ffe58a;box-shadow:0 0 22px #ffe58a99,0 8px 14px #0008}
 
 .status{position:absolute;left:50%;top:72%;transform:translateX(-50%);z-index:40;background:#06130fe8;border:1px solid #779482;border-radius:18px;padding:8px 16px;white-space:nowrap;box-shadow:0 5px 20px #0008;font-size:14px}
-.actions{position:absolute;bottom:17px;right:18px;z-index:45;display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;max-width:310px}
+.actions{position:absolute;bottom:17px;right:18px;z-index:120;pointer-events:auto;display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;max-width:310px}
 .action{padding:11px 15px;border:1px solid #c28b38;border-radius:11px;background:linear-gradient(#a96c1f,#63390e);color:white;font-weight:bold;cursor:pointer;box-shadow:0 4px 10px #0008}
 .action:disabled{opacity:.35;cursor:not-allowed} .blind-btn{position:absolute;right:18px;bottom:135px;z-index:46;padding:13px 18px;border:2px solid #8993c2;border-radius:13px;background:linear-gradient(#273a70,#111d42);color:#fff;font-weight:900;cursor:pointer;box-shadow:0 0 18px #6677bb66,0 5px 12px #0009;animation:blindPulse 1.6s infinite}.blind-btn:hover{filter:brightness(1.18);transform:translateY(-2px)}@keyframes blindPulse{50%{box-shadow:0 0 28px #9aaaff99,0 5px 12px #0009}}
 .log{position:absolute;left:18px;bottom:17px;z-index:40;width:min(280px,31vw);background:#07140fe0;border:1px solid #688071;border-radius:12px;padding:9px;font-size:11px;box-shadow:0 5px 15px #0008}
@@ -1287,6 +1287,9 @@ let onlineSocket=null;
 let onlineRoomCode="";
 let onlineGuestReady=false;
 let onlineStateTimer=null;
+let lastOnlineHandsSignature="";
+let lastOnlineCenterSignature="";
+let lastOnlineActionsSignature="";
 
 function setOnlineStatus(msg){
   const el=document.getElementById("onlineStatus");
@@ -1302,7 +1305,7 @@ function openOnline(){
 
 function closeOnline(){
   if(onlineSocket){onlineSocket.disconnect();onlineSocket=null;}
-  onlineMode=false;onlineRole=null;onlineRoomCode="";onlineGuestReady=false;
+  onlineMode=false;onlineRole=null;onlineRoomCode="";onlineGuestReady=false;lastOnlineHandsSignature="";lastOnlineCenterSignature="";lastOnlineActionsSignature="";
   if(onlineStateTimer){clearInterval(onlineStateTimer);onlineStateTimer=null;}
   document.getElementById("onlineModal").classList.add("hidden");
 }
@@ -1370,7 +1373,7 @@ async function ensureOnlineConnection(){
   return (document.getElementById("onlineName")?.value||"Você").trim().slice(0,18)||"Você";
 }
     onlineSocket.on("room_joined",data=>{
-      onlineRole="guest";localPlayerId=1;onlineRoomCode=data.code;
+      onlineRole="guest";localPlayerId=1;onlineRoomCode=data.code;lastOnlineHandsSignature="";lastOnlineCenterSignature="";lastOnlineActionsSignature="";
       document.getElementById("onlineModal").classList.add("hidden");
       document.getElementById("menu").classList.add("hidden");
       document.getElementById("game").classList.remove("hidden");
@@ -1396,7 +1399,7 @@ async function createOnlineRoom(){
   try{
     const name=(document.getElementById("onlineName").value||"Jogador").trim().slice(0,18)||"Jogador";
     await ensureOnlineConnection();
-    onlineMode=true;onlineRole="host";localPlayerId=0;
+    onlineMode=true;onlineRole="host";localPlayerId=0;lastOnlineHandsSignature="";lastOnlineCenterSignature="";lastOnlineActionsSignature="";
     const mode=document.getElementById("modeSel")?.value||"mineiro";
     onlineSocket.emit("create_room",{name,gameMode:mode});
     setOnlineStatus("Criando sala...");
@@ -1436,7 +1439,7 @@ function startOnlineHost(guestName){
   gameState.logs=[];gameState.isPlayingBlind=false;gameState.roundBlind=false;gameState.blindBy=null;gameState.vira=null;
   renderScores();updateModeUI();newHand();
   if(onlineStateTimer)clearInterval(onlineStateTimer);
-  onlineStateTimer=setInterval(broadcastOnlineState,120);
+  onlineStateTimer=setInterval(broadcastOnlineState,250);
   broadcastOnlineState();
 }
 
@@ -1527,8 +1530,31 @@ function applyOnlineSnapshot(s){
   Object.assign(gameState,s,preserved);
   gameState.phase=s.phase;
   gameState.players=(s.players||[]).map(p=>({...p,cards:p.cards||[]}));
+
+  const handsSig=(gameState.players||[]).map(p=>`${p.id}:${(p.cards||[]).map(c=>c?.id||"_").join(",")}`).join("|");
+  const centerSig=(gameState.trick||[]).map(x=>`${x.playerId}:${x.card?.id||"_"}:${x.hidden?1:0}`).join("|");
+  const actionsSig=`${gameState.phase}|${gameState.turn}|${gameState.raisePending}|${gameState.raiseTeam}|${gameState.targetValue}|${gameState.trickNo}|${gameState.handValue}`;
+
   updateOnlinePerspective();
-  renderScores();updateModeUI();updateOnlinePerspective();renderOnlineHands();renderCenter();renderOnlineTurn();renderOnlineActions();
+  renderScores();
+  updateModeUI();
+  renderOnlineTurn();
+
+  // O servidor envia snapshots frequentemente. Não reconstruímos as cartas a cada snapshot,
+  // pois isso fazia a mão do convidado parecer "tremendo".
+  if(handsSig!==lastOnlineHandsSignature){
+    lastOnlineHandsSignature=handsSig;
+    renderOnlineHands();
+  }
+  if(centerSig!==lastOnlineCenterSignature){
+    lastOnlineCenterSignature=centerSig;
+    renderCenter();
+  }
+  if(actionsSig!==lastOnlineActionsSignature){
+    lastOnlineActionsSignature=actionsSig;
+    renderOnlineActions();
+  }
+
   if(gameState.phase==="play"){
     status(gameState.turn===localPlayerId?"🟢 Sua vez":"⏳ Aguardando a vez do adversário...");
   }
@@ -1569,7 +1595,9 @@ function renderOnlineHands(){
 }
 
 function renderOnlineActions(){
-  const a=document.getElementById("actions");a.innerHTML="";
+  const a=document.getElementById("actions");
+  a.innerHTML="";
+  a.style.pointerEvents="auto";
   const blind=document.getElementById("blindBtn");
   if(blind)blind.classList.add("hidden");
   if(gameState.phase==="matchEnd"||gameState.phase==="handEnd"||gameState.phase==="waiting")return;
@@ -1631,28 +1659,36 @@ playCard=function(playerId,idx){
     if(playerId===localPlayerId)onlineSocket?.emit("action",{type:"playCard",playerId,index:idx});
     return;
   }
-  return _originalPlayCard(playerId,idx);
+  const result=_originalPlayCard(playerId,idx);
+  if(onlineMode&&onlineRole==="host")broadcastOnlineState();
+  return result;
 };
 requestRaise=function(playerId,value){
   if(onlineMode&&onlineRole==="guest"){
     if(playerId===localPlayerId)onlineSocket?.emit("action",{type:"requestRaise",playerId,value});
     return;
   }
-  return _originalRequestRaise(playerId,value);
+  const result=_originalRequestRaise(playerId,value);
+  if(onlineMode&&onlineRole==="host")broadcastOnlineState();
+  return result;
 };
 counterRaise=function(playerId,value){
   if(onlineMode&&onlineRole==="guest"){
     if(playerId===localPlayerId)onlineSocket?.emit("action",{type:"counterRaise",playerId,value});
     return;
   }
-  return _originalCounterRaise(playerId,value);
+  const result=_originalCounterRaise(playerId,value);
+  if(onlineMode&&onlineRole==="host")broadcastOnlineState();
+  return result;
 };
 respondRaise=function(decision){
   if(onlineMode&&onlineRole==="guest"){
     onlineSocket?.emit("action",{type:"respondRaise",playerId:localPlayerId,decision});
     return;
   }
-  return _originalRespondRaise(decision);
+  const result=_originalRespondRaise(decision);
+  if(onlineMode&&onlineRole==="host")broadcastOnlineState();
+  return result;
 };
 playBlind=function(playerId=0){
   if(onlineMode&&onlineRole==="guest")return false;
