@@ -9,6 +9,7 @@ const io = new Server(server, {
   cors: { origin: "*" }
 });
 
+app.use(express.static(__dirname));
 app.use(express.static(path.join(__dirname, "public")));
 
 const rooms = new Map();
