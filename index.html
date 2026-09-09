@@ -55,6 +55,9 @@ box-shadow:inset 0 0 0 5px #2c170b,inset 0 0 60px #001d0f,0 25px 70px #000}
 
 .hand{display:flex;justify-content:center;align-items:center;position:absolute;pointer-events:none}
 #hand0{bottom:4px;left:50%;transform:translateX(-50%);height:150px;width:min(65vw,560px);z-index:30;pointer-events:auto}
+.online-local-hand{pointer-events:auto!important}
+.online-local-hand .card{cursor:pointer}
+.online-local-hand .card:hover{transform:translateY(-18px) rotate(-1deg);filter:brightness(1.05);z-index:4}
 .hidden-hand{gap:0}
 #hand1{top:4px;left:50%;transform:translateX(-50%);height:100px}
 #hand2{left:8px;top:50%;transform:translateY(-50%) rotate(90deg);height:90px}
@@ -202,7 +205,7 @@ box-shadow:inset 0 0 0 5px #2c170b,inset 0 0 60px #001d0f,0 25px 70px #000}
 </div>
 </div>
 
-<script src="/socket.io/socket.io.js"></script>
+<script src="https://cdn.socket.io/4.8.1/socket.io.min.js"></script>
 <script>
 "use strict";
 
@@ -1018,6 +1021,7 @@ function thinkDelay(){
 ========================= */
 function aiTurn(){
  if(gameState.phase!=="play"||gameState.raisePending||gameState.turn===0)return;
+ if(onlineMode&&onlineRole==="host"&&gameState.turn===1)return;
  const p=gameState.players[gameState.turn];
  if(!p)return;
  document.getElementById("p"+p.id).classList.add("thinking");
@@ -1281,7 +1285,7 @@ function ensureOnlineConnection(){
   if(onlineSocket && onlineSocket.connected)return Promise.resolve();
   return new Promise((resolve,reject)=>{
     if(typeof io!=="function"){reject(new Error("Socket.IO não carregou."));return;}
-    onlineSocket=io({transports:["websocket","polling"]});
+    onlineSocket=io("https://truco-online-x7hi.onrender.com",{transports:["websocket","polling"]});
     onlineSocket.once("connect",resolve);
     onlineSocket.once("connect_error",reject);
     onlineSocket.on("error",data=>setOnlineStatus(data?.message||"Erro na conexão."));
@@ -1316,6 +1320,9 @@ function ensureOnlineConnection(){
       }
       broadcastOnlineState();
     });
+    function nameForOnlineGuest(){
+  return (document.getElementById("onlineName")?.value||"Você").trim().slice(0,18)||"Você";
+}
     onlineSocket.on("room_joined",data=>{
       onlineRole="guest";localPlayerId=1;onlineRoomCode=data.code;
       document.getElementById("onlineModal").classList.add("hidden");
@@ -1324,6 +1331,8 @@ function ensureOnlineConnection(){
       onlineMode=true;
       gameState.gameMode=data.gameMode||document.getElementById("modeSel")?.value||"mineiro";
       gameState.phase="waiting";
+      gameState.players[1].name=nameForOnlineGuest();
+      updateOnlinePerspective();
       status("Conectado. Aguardando o anfitrião iniciar...");
       renderScores();updateModeUI();
     });
@@ -1410,6 +1419,34 @@ function broadcastOnlineState(){
   onlineSocket.emit("state",serializeOnlineState());
 }
 
+function updateOnlinePerspective(){
+  if(!onlineMode)return;
+  const local=getPlayer(localPlayerId);
+  const partner=gameState.players.find(p=>p.team===local?.team&&p.id!==localPlayerId);
+  const opponent=gameState.players.find(p=>p.team!==local?.team&&p.id!==localPlayerId);
+  const setPlayer=(id,name,role,avatar)=>{
+    const el=document.getElementById("p"+id);
+    if(!el)return;
+    const nameEl=el.querySelector(".name");
+    const roleEl=el.querySelector(".role");
+    const avatarEl=el.querySelector(".avatar");
+    if(nameEl)nameEl.textContent=name;
+    if(roleEl)roleEl.textContent=role;
+    if(avatarEl)avatarEl.textContent=avatar;
+  };
+  if(localPlayerId===1){
+    setPlayer(1,"Você","SUA DUPLA • SUA ESQUERDA",local?.avatar||"😎");
+    setPlayer(3,partner?.name||"Zé","SEU PARCEIRO • SUA DIREITA",partner?.avatar||"🧢");
+    setPlayer(0,gameState.players[0]?.name||"Jogador","DUPLA ADVERSÁRIA",gameState.players[0]?.avatar||"😎");
+    setPlayer(2,gameState.players[2]?.name||"Pedro","DUPLA ADVERSÁRIA",gameState.players[2]?.avatar||"👨‍🌾");
+  }else{
+    setPlayer(0,local?.name||"Você","SUA DUPLA",local?.avatar||"😎");
+  }
+  document.querySelectorAll(".hand").forEach(h=>h.classList.remove("online-local-hand"));
+  const localHand=getHandElementForPlayer(localPlayerId);
+  if(localHand)localHand.classList.add("online-local-hand");
+}
+
 function applyOnlineSnapshot(s){
   if(!s)return;
   const preserved={
@@ -1419,20 +1456,28 @@ function applyOnlineSnapshot(s){
   Object.assign(gameState,s,preserved);
   gameState.phase=s.phase;
   gameState.players=(s.players||[]).map(p=>({...p,cards:p.cards||[]}));
+  updateOnlinePerspective();
   renderScores();updateModeUI();renderOnlineHands();renderCenter();renderTurn();renderOnlineActions();
+  if(gameState.phase==="play"){
+    status(gameState.turn===localPlayerId?"🟢 Sua vez":"⏳ Aguardando a vez do adversário...");
+  }
   if(gameState.phase==="matchEnd"&&gameState.handWinner!==null)showVictoryOnline(gameState.handWinner);
 }
 
 function renderOnlineHands(){
+  document.querySelectorAll(".hand").forEach(h=>h.classList.remove("online-local-hand"));
   for(let id=0;id<4;id++){
     const el=getHandElementForPlayer(id),p=getPlayer(id);
     if(!el||!p)continue;
-    const canReveal=id===localPlayerId || id===gameState.players.find(x=>x.team===gameState.players[localPlayerId]?.team && x.id!==localPlayerId)?.id;
+    const teammate=gameState.players.find(x=>x.team===gameState.players[localPlayerId]?.team&&x.id!==localPlayerId);
+    const canReveal=id===localPlayerId || id===teammate?.id;
     el.innerHTML=(p.cards||[]).map(c=>cardHTML(c,!canReveal)).join("");
   }
+  const localHand=getHandElementForPlayer(localPlayerId);
+  if(localHand)localHand.classList.add("online-local-hand");
   const mine=getPlayer(localPlayerId);
   if(mine){
-    document.querySelectorAll(getHandElementForPlayer(localPlayerId).id==="hand0"?"#hand0 .card":`#${getHandElementForPlayer(localPlayerId).id} .card`).forEach((el,idx)=>{
+    document.querySelectorAll(`#${getHandElementForPlayer(localPlayerId).id} .card`).forEach((el,idx)=>{
       el.onclick=()=>{
         if(gameState.turn===localPlayerId&&gameState.phase==="play"&&!gameState.raisePending){
           onlineSocket?.emit("action",{type:"playCard",playerId:localPlayerId,index:idx});
