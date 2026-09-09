@@ -58,6 +58,9 @@ box-shadow:inset 0 0 0 5px #2c170b,inset 0 0 60px #001d0f,0 25px 70px #000}
 .online-local-hand{pointer-events:auto!important}
 .online-local-hand .card{cursor:pointer}
 .online-local-hand .card:hover{transform:translateY(-18px) rotate(-1deg);filter:brightness(1.05);z-index:4}
+.online-local-hand{pointer-events:auto!important}
+.online-local-hand .card{cursor:pointer}
+.online-local-hand .card:hover{transform:translateY(-18px) rotate(-1deg);filter:brightness(1.05);z-index:4}
 .hidden-hand{gap:0}
 #hand1{top:4px;left:50%;transform:translateX(-50%);height:100px}
 #hand2{left:8px;top:50%;transform:translateY(-50%) rotate(90deg);height:90px}
@@ -1050,6 +1053,7 @@ function thinkDelay(){
 function aiTurn(){
  if(gameState.phase!=="play"||gameState.raisePending||gameState.turn===0)return;
  if(onlineMode&&onlineRole==="host"&&gameState.turn===1)return;
+ if(onlineMode&&onlineRole==="guest")return;
  const p=gameState.players[gameState.turn];
  if(!p)return;
  document.getElementById("p"+p.id).classList.add("thinking");
@@ -1461,32 +1465,57 @@ function broadcastOnlineState(){
   onlineSocket.emit("state",serializeOnlineState());
 }
 
-function updateOnlinePerspective(){
+function getOnlineSeatPlayerIds(){
+  // Mantém a mesma lógica física da mesa, mas coloca o jogador local embaixo,
+  // o parceiro na frente e os dois adversários nas laterais.
+  if(localPlayerId===1)return {0:1,1:0,2:3,3:2};
+  return {0:0,1:1,2:2,3:3};
+}
+
+function getOnlineSeatForPlayer(playerId){
+  const map=getOnlineSeatPlayerIds();
+  for(const seat of [0,1,2,3])if(map[seat]===playerId)return seat;
+  return null;
+}
+
+function renderOnlinePlayers(){
   if(!onlineMode)return;
+  const map=getOnlineSeatPlayerIds();
   const local=getPlayer(localPlayerId);
   const partner=gameState.players.find(p=>p.team===local?.team&&p.id!==localPlayerId);
-  const opponent=gameState.players.find(p=>p.team!==local?.team&&p.id!==localPlayerId);
-  const setPlayer=(id,name,role,avatar)=>{
-    const el=document.getElementById("p"+id);
-    if(!el)return;
-    const nameEl=el.querySelector(".name");
-    const roleEl=el.querySelector(".role");
-    const avatarEl=el.querySelector(".avatar");
-    if(nameEl)nameEl.textContent=name;
-    if(roleEl)roleEl.textContent=role;
-    if(avatarEl)avatarEl.textContent=avatar;
+  const seatRoles={
+    0:'VOCÊ',
+    1:'ADVERSÁRIO • SUA ESQUERDA',
+    2:'SEU PARCEIRO • À SUA FRENTE',
+    3:'ADVERSÁRIO • SUA DIREITA'
   };
-  if(localPlayerId===1){
-    setPlayer(1,"Você","SUA DUPLA • SUA ESQUERDA",local?.avatar||"😎");
-    setPlayer(3,partner?.name||"Zé","SEU PARCEIRO • SUA DIREITA",partner?.avatar||"🧢");
-    setPlayer(0,gameState.players[0]?.name||"Jogador","DUPLA ADVERSÁRIA",gameState.players[0]?.avatar||"😎");
-    setPlayer(2,gameState.players[2]?.name||"Pedro","DUPLA ADVERSÁRIA",gameState.players[2]?.avatar||"👨‍🌾");
-  }else{
-    setPlayer(0,local?.name||"Você","SUA DUPLA",local?.avatar||"😎");
+  for(const seat of [0,1,2,3]){
+    const player=getPlayer(map[seat]);
+    const el=document.getElementById('p'+seat);
+    if(!el||!player)continue;
+    const nameEl=el.querySelector('.name');
+    const roleEl=el.querySelector('.role');
+    const avatarEl=el.querySelector('.avatar');
+    if(nameEl)nameEl.textContent=player.id===localPlayerId?'Você':player.name;
+    if(roleEl)roleEl.textContent=seat===0?'VOCÊ':(player.id===partner?.id?'SEU PARCEIRO • À SUA FRENTE':seatRoles[seat]);
+    if(avatarEl)avatarEl.textContent=player.avatar||'🙂';
   }
-  document.querySelectorAll(".hand").forEach(h=>h.classList.remove("online-local-hand"));
-  const localHand=getHandElementForPlayer(localPlayerId);
-  if(localHand)localHand.classList.add("online-local-hand");
+}
+
+function updateOnlinePerspective(){
+  if(!onlineMode)return;
+  renderOnlinePlayers();
+  document.querySelectorAll('.hand').forEach(h=>h.classList.remove('online-local-hand'));
+  const localSeat=getOnlineSeatForPlayer(localPlayerId);
+  const localHand=document.getElementById('hand'+({0:0,1:2,2:1,3:3}[localSeat]));
+  if(localHand)localHand.classList.add('online-local-hand');
+}
+
+function renderOnlineTurn(){
+  const map=getOnlineSeatPlayerIds();
+  document.querySelectorAll('.player').forEach(el=>el.classList.remove('turn'));
+  const seat=getOnlineSeatForPlayer(gameState.turn);
+  if(seat!==null)document.getElementById('p'+seat)?.classList.add('turn');
 }
 
 function applyOnlineSnapshot(s){
@@ -1499,7 +1528,7 @@ function applyOnlineSnapshot(s){
   gameState.phase=s.phase;
   gameState.players=(s.players||[]).map(p=>({...p,cards:p.cards||[]}));
   updateOnlinePerspective();
-  renderScores();updateModeUI();renderOnlineHands();renderCenter();renderTurn();renderOnlineActions();
+  renderScores();updateModeUI();updateOnlinePerspective();renderOnlineHands();renderCenter();renderOnlineTurn();renderOnlineActions();
   if(gameState.phase==="play"){
     status(gameState.turn===localPlayerId?"🟢 Sua vez":"⏳ Aguardando a vez do adversário...");
   }
@@ -1507,22 +1536,32 @@ function applyOnlineSnapshot(s){
 }
 
 function renderOnlineHands(){
-  document.querySelectorAll(".hand").forEach(h=>h.classList.remove("online-local-hand"));
-  for(let id=0;id<4;id++){
-    const el=getHandElementForPlayer(id),p=getPlayer(id);
+  const map=getOnlineSeatPlayerIds();
+  document.querySelectorAll('.hand').forEach(h=>h.classList.remove('online-local-hand'));
+  const localTeam=getPlayer(localPlayerId)?.team;
+  const teammate=gameState.players.find(x=>x.team===localTeam&&x.id!==localPlayerId);
+
+  for(const seat of [0,1,2,3]){
+    const playerId=map[seat];
+    const p=getPlayer(playerId);
+    const handId={0:0,1:2,2:1,3:3}[seat];
+    const el=document.getElementById('hand'+handId);
     if(!el||!p)continue;
-    const teammate=gameState.players.find(x=>x.team===gameState.players[localPlayerId]?.team&&x.id!==localPlayerId);
-    const canReveal=id===localPlayerId || id===teammate?.id;
-    el.innerHTML=(p.cards||[]).map(c=>cardHTML(c,!canReveal)).join("");
+    const canReveal=playerId===localPlayerId||playerId===teammate?.id;
+    el.innerHTML=(p.cards||[]).map(c=>cardHTML(c,!canReveal)).join('');
   }
-  const localHand=getHandElementForPlayer(localPlayerId);
-  if(localHand)localHand.classList.add("online-local-hand");
+
+  const localSeat=getOnlineSeatForPlayer(localPlayerId);
+  const localHandId={0:0,1:2,2:1,3:3}[localSeat];
+  const localHand=document.getElementById('hand'+localHandId);
+  if(localHand)localHand.classList.add('online-local-hand');
+
   const mine=getPlayer(localPlayerId);
-  if(mine){
-    document.querySelectorAll(`#${getHandElementForPlayer(localPlayerId).id} .card`).forEach((el,idx)=>{
+  if(mine&&localHand){
+    localHand.querySelectorAll('.card').forEach((el,idx)=>{
       el.onclick=()=>{
-        if(gameState.turn===localPlayerId&&gameState.phase==="play"&&!gameState.raisePending){
-          onlineSocket?.emit("action",{type:"playCard",playerId:localPlayerId,index:idx});
+        if(gameState.turn===localPlayerId&&gameState.phase==='play'&&!gameState.raisePending){
+          onlineSocket?.emit('action',{type:'playCard',playerId:localPlayerId,index:idx});
         }
       };
     });
