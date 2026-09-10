@@ -594,7 +594,7 @@ function newHand(){
   for(let n=0;n<3;n++)for(let i=0;i<4;i++)gameState.players[i].cards.push(deck.pop());
   if(gameState.gameMode==="paulista")gameState.vira=deck.pop();
   gameState.players.forEach(p=>p.cards.sort((a,b)=>strength(a)-strength(b)));
-  gameState.leader=(gameState.dealer+1)%4;gameState.turn=gameState.leader;
+  gameState.leader=nextTablePlayer(gameState.dealer);gameState.turn=gameState.leader;
   renderHands();renderCenter();renderTurn();renderScores();updateModeUI();
   log(`Nova mão. ${gameState.players[gameState.leader].name} começa.`);
   if(prepareSpecialHand()){
@@ -639,7 +639,7 @@ function playCard(playerId,idx){
  // estado antes da animação começar.
  animatePlayedCard(playerId,gameState.trick.length-1);
  if(gameState.trick.length===4){finishTrick();return}
- gameState.turn=(gameState.turn+1)%4;
+ gameState.turn=nextTablePlayer(gameState.turn);
  renderTurn();
  if(gameState.turn===0){status(gameState.roundBlind?"🌑 NO ESCURO — sua vez":"🟢 Sua vez");renderActions()}
  else{status(gameState.roundBlind?`🌑 NO ESCURO — ${gameState.players[gameState.turn].name} está pensando...`:`${gameState.players[gameState.turn].name} está pensando...`);renderActions();setTimeout(aiTurn,thinkDelay())}
@@ -745,7 +745,7 @@ function finishHand(forcedWinnerTeam=null){
  renderActions();
  setTimeout(()=>{
   if(gameState.scores[winnerTeam]>=12){gameState.phase="matchEnd";showVictory(winnerTeam);return}
-  gameState.dealer=(gameState.dealer+1)%4;newHand();
+  gameState.dealer=nextTablePlayer(gameState.dealer);newHand();
  },1800/gameState.animationSpeed);
 }
 
@@ -1341,8 +1341,8 @@ function ensureOnlineConnection(){
         if(Number(data.playerId)!==0){
   document.getElementById("onlineModal").classList.add("hidden");
 }
-        document.getElementById("menu").classList.add("hidden");
-        document.getElementById("game").classList.remove("hidden");
+document.getElementById("menu").classList.add("hidden");
+document.getElementById("game").classList.remove("hidden");
         gameState.gameMode=data.gameMode||document.getElementById("modeSel")?.value||"mineiro";
         gameState.phase="waiting";
         for(const info of onlinePlayers){const p=getPlayer(Number(info.id));if(p){p.name=info.name||p.name;p.team=Number(info.team??p.team);}}
@@ -1385,27 +1385,29 @@ async function createOnlineRoom(){
   try{
     const name=(document.getElementById("onlineName").value||"Jogador 1").trim().slice(0,18)||"Jogador 1";
     const mode=document.getElementById("modeSel")?.value||"mineiro";
+
     await ensureOnlineConnection();
-onlineMode=true;
-onlineRole="host";
-localPlayerId=0;
+    onlineMode=true;
+    onlineRole="host";
+    localPlayerId=0;
 
-setOnlineStatus("Criando sala...");
+    setOnlineStatus("Criando sala...");
 
-onlineSocket.once("room_created",data=>{
-  onlineRoomCode=data.code;
+    // Registra o listener antes do emit para não perder o código da sala.
+    onlineSocket.once("room_created",data=>{
+      onlineRoomCode=data.code;
+      document.getElementById("onlineJoinBox").classList.add("hidden");
+      document.getElementById("onlineRoomInfo").classList.remove("hidden");
+      document.getElementById("roomCode").textContent=data.code;
+      document.getElementById("onlineRoomText").textContent="Sala criada!";
+      setOnlineStatus("Sala criada. Aguardando mais 3 jogadores...");
+    });
 
-  document.getElementById("onlineJoinBox").classList.add("hidden");
-  document.getElementById("onlineRoomInfo").classList.remove("hidden");
-
-  document.getElementById("roomCode").textContent=data.code;
-  document.getElementById("onlineRoomText").textContent="Sala criada!";
-
-  setOnlineStatus("Sala criada. Aguardando mais 3 jogadores...");
-});
-
-onlineSocket.emit("create_room",{name,gameMode:mode});
-  }catch(e){console.error(e);setOnlineStatus("Erro ao conectar: "+(e?.message||"falha desconhecida"));}
+    onlineSocket.emit("create_room",{name,gameMode:mode});
+  }catch(e){
+    console.error(e);
+    setOnlineStatus("Erro ao conectar: "+(e?.message||"falha desconhecida"));
+  }
 }
 async function joinOnlineRoom(){
   try{
@@ -1426,13 +1428,59 @@ function startOnlineHost(players){
 }
 function serializeOnlineState(){return JSON.parse(JSON.stringify({gameMode:gameState.gameMode,players:gameState.players.map(p=>({id:p.id,name:p.name,team:p.team,avatar:p.avatar,cards:p.cards.map(c=>({id:c.id,rank:c.rank,suit:c.suit,suitName:c.suitName,symbol:c.symbol,red:c.red,manilha:c.manilha}))})),scores:gameState.scores,dealer:gameState.dealer,turn:gameState.turn,leader:gameState.leader,trick:gameState.trick.map(x=>({playerId:x.playerId,card:x.card,cardIndex:x.cardIndex,hidden:!!x.hidden})),trickNo:gameState.trickNo,trickWins:gameState.trickWins,handValue:gameState.handValue,targetValue:gameState.targetValue,phase:gameState.phase,raisingBy:gameState.raisingBy,raisePending:gameState.raisePending,raiseTeam:gameState.raiseTeam,lastTrickWinner:gameState.lastTrickWinner,lastTrickTied:gameState.lastTrickTied,trickResults:gameState.trickResults,handWinner:gameState.handWinner,isPlayingBlind:!!gameState.isPlayingBlind,roundBlind:!!gameState.roundBlind,blindBy:gameState.blindBy,vira:gameState.vira,logs:gameState.logs}));}
 function broadcastOnlineState(){if(!onlineSocket||!onlineSocket.connected||onlineRole!=="host"||!onlineStarted)return;onlineSocket.emit("state",serializeOnlineState());}
+// Ordem da mesa no sentido anti-horário.
+// Os parceiros ficam sempre frente a frente:
+// Jogador 1 <-> Jogador 2 e Jogador 3 <-> Jogador 4.
+const TABLE_ORDER_ANTI_CLOCKWISE=[0,3,1,2];
+
+function nextTablePlayer(playerId){
+  const i=TABLE_ORDER_ANTI_CLOCKWISE.indexOf(Number(playerId));
+  return TABLE_ORDER_ANTI_CLOCKWISE[(i+1)%TABLE_ORDER_ANTI_CLOCKWISE.length];
+}
+
 function getOnlineSeatPlayerIds(){
   if(!onlineMode)return {0:0,1:1,2:2,3:3};
-  const local=getPlayer(localPlayerId);const partner=gameState.players.find(p=>p.team===local?.team&&p.id!==localPlayerId);const opponents=gameState.players.filter(p=>p.id!==localPlayerId&&p.id!==partner?.id);
-  return {0:localPlayerId,1:opponents[0]?.id,2:partner?.id,3:opponents[1]?.id};
+
+  const ids=[...TABLE_ORDER_ANTI_CLOCKWISE];
+  const start=ids.indexOf(Number(localPlayerId));
+  if(start<0)return {0:localPlayerId,1:null,2:null,3:null};
+
+  const ordered=[
+    ids[start],
+    ids[(start+1)%4],
+    ids[(start+2)%4],
+    ids[(start+3)%4]
+  ];
+
+  // Visual: 0=baixo (você), 3=direita, 2=frente, 1=esquerda.
+  return {
+    0:ordered[0],
+    3:ordered[1],
+    2:ordered[2],
+    1:ordered[3]
+  };
 }
 function getOnlineSeatForPlayer(playerId){const map=getOnlineSeatPlayerIds();for(const seat of [0,1,2,3])if(map[seat]===playerId)return seat;return null;}
-function renderOnlinePlayers(){if(!onlineMode)return;const map=getOnlineSeatPlayerIds();const local=getPlayer(localPlayerId);const partner=gameState.players.find(p=>p.team===local?.team&&p.id!==localPlayerId);for(const seat of [0,1,2,3]){const player=getPlayer(map[seat]);const el=document.getElementById('p'+seat);if(!el||!player)continue;el.querySelector('.name').textContent=player.id===localPlayerId?'Você':player.name;el.querySelector('.role').textContent=seat===0?'VOCÊ':(player.id===partner?.id?'SEU PARCEIRO • À SUA FRENTE':`ADVERSÁRIO • SUA ${seat===1?'ESQUERDA':'DIREITA'}`);el.querySelector('.avatar').textContent=player.avatar||'🙂';}}
+function renderOnlinePlayers(){
+  if(!onlineMode)return;
+  const map=getOnlineSeatPlayerIds();
+  const local=getPlayer(localPlayerId);
+  const partner=gameState.players.find(p=>p.team===local?.team&&p.id!==localPlayerId);
+
+  for(const seat of [0,1,2,3]){
+    const player=getPlayer(map[seat]);
+    const el=document.getElementById('p'+seat);
+    if(!el||!player)continue;
+
+    el.querySelector('.name').textContent=player.id===localPlayerId?'Você':player.name;
+    el.querySelector('.role').textContent=
+      seat===0?'VOCÊ':
+      (player.id===partner?.id?'SEU PARCEIRO • À SUA FRENTE':
+      (seat===3?'ADVERSÁRIO • SUA DIREITA':'ADVERSÁRIO • SUA ESQUERDA'));
+
+    el.querySelector('.avatar').textContent=player.avatar||'🙂';
+  }
+}
 function updateOnlinePerspective(){if(!onlineMode)return;renderOnlinePlayers();document.querySelectorAll('.hand').forEach(h=>h.classList.remove('online-local-hand'));const seat=getOnlineSeatForPlayer(localPlayerId);const hand=document.getElementById('hand'+({0:0,1:2,2:1,3:3}[seat]));if(hand)hand.classList.add('online-local-hand');}
 function renderOnlineTurn(){const seat=getOnlineSeatForPlayer(gameState.turn);document.querySelectorAll('.player').forEach(e=>e.classList.remove('turn'));if(seat!==null)document.getElementById('p'+seat)?.classList.add('turn');}
 function applyOnlineSnapshot(s){if(!s)return;const preserved={sound:gameState.sound,animationSpeed:gameState.animationSpeed,difficulty:gameState.difficulty,aiMemory:gameState.aiMemory||{actions:[],players:{},playedCards:[]}};Object.assign(gameState,s,preserved);gameState.players=(s.players||[]).map(p=>({...p,cards:p.cards||[]}));if(gameState.players[localPlayerId])gameState.players[localPlayerId].name="Você";onlineStarted=true;updateOnlinePerspective();renderScores();updateModeUI();renderOnlineHands();renderCenter();renderOnlineTurn();renderOnlineActions();if(gameState.phase==='play')status(gameState.turn===localPlayerId?'🟢 Sua vez':'⏳ Aguardando a vez do adversário...');}
