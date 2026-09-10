@@ -17,82 +17,62 @@ const rooms = new Map();
 function makeCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code = "";
+
   do {
-    code = Array.from({length: 6}, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+    code = Array.from(
+      { length: 6 },
+      () => chars[Math.floor(Math.random() * chars.length)]
+    ).join("");
   } while (rooms.has(code));
+
   return code;
 }
 
 function roomOf(socket) {
-  for (const [code, room] of rooms) {
-    if (room.host === socket.id || room.guest === socket.id) return [code, room];
-  }
-  return [null, null];
+  const code = socket.roomCode;
+  const room = code ? rooms.get(code) : null;
+  return room ? [code, room] : [null, null];
 }
 
-function sendSnapshot(room, snapshot) {
-  if (room.guest) {
-    const guestView = JSON.parse(JSON.stringify(snapshot));
-    // O convidado recebe somente a própria mão e a mão do parceiro (Zé).
-    // As cartas do anfitrião e do outro adversário ficam ocultas.
-    guestView.players = guestView.players.map(p => {
-      if (p.id === 1 || p.id === 3) return p;
-      return {...p, cards: (p.cards || []).map(() => null)};
-    });
-    if (guestView.trick) {
-      guestView.trick = guestView.trick.map(x => {
-        if (x.hidden) return x;
-        return x;
-      });
-    }
-    io.to(room.guest).emit("state", guestView);
-  }
+function publicPlayers(room) {
+  return room.players.map(p => ({
+    id: p.id,
+    name: p.name,
+    team: p.team,
+    avatar: p.avatar,
+    connected: !!p.socketId,
+    bot: false
+  }));
 }
 
-io.on("connection", socket => {
-  socket.on("create_room", ({name, gameMode}) => {
-    const code = makeCode();
-    rooms.set(code, {
-      host: socket.id,
-      guest: null,
-      hostName: String(name || "Jogador").slice(0,18),
-      guestName: null,
-      gameMode: gameMode === "paulista" ? "paulista" : "mineiro",
-      lastState: null
-    });
-    socket.join(code);
-    socket.emit("room_created", {code});
+function emitPlayers(room) {
+  io.to(room.code).emit("players_update", {
+    players: publicPlayers(room)
   });
+}
 
-  socket.on("join_room", ({name, code}) => {
-    code = String(code || "").trim().toUpperCase();
-    const room = rooms.get(code);
-    if (!room) {
-      socket.emit("error", {message: "Sala não encontrada."});
-      return;
+function sendSnapshot(room, snapshot, receiverId) {
+  if (!snapshot) return;
+
+  const view = JSON.parse(JSON.stringify(snapshot));
+  const receiver = room.players[receiverId];
+
+  if (!receiver) return;
+
+  // Cada jogador vê:
+  // - suas próprias cartas
+  // - as cartas do parceiro
+  // Os adversários ficam ocultos.
+  const team = receiver.team;
+
+  view.players = (view.players || []).map(p => {
+    const visible =
+      Number(p.id) === receiverId ||
+      Number(p.team) === team;
+
+    if (visible) {
+      return p;
     }
-    if (room.guest && room.guest !== socket.id) {
-      socket.emit("error", {message: "Essa sala já está cheia."});
-      return;
-    }
-    room.guest = socket.id;
-    room.guestName = String(name || "Convidado").slice(0,18);
-    socket.join(code);
-
-    socket.emit("room_joined", {
-      code,
-      gameMode: room.gameMode,
-      hostName: room.hostName
-    });
-
-    io.to(room.host).emit("guest_joined", {
-      name: room.guestName
-    });
-  if (room.lastState) {
-  const guestView = JSON.parse(JSON.stringify(room.lastState));
-
-  guestView.players = guestView.players.map(p => {
-    if (p.id === 1 || p.id === 3) return p;
 
     return {
       ...p,
@@ -100,43 +80,354 @@ io.on("connection", socket => {
     };
   });
 
-  io.to(room.guest).emit("state", guestView);
+  io.to(receiver.socketId).emit("state", view);
 }
 
-});
+function broadcastState(room, snapshot) {
+  room.lastState = snapshot;
 
+  for (const p of room.players) {
+    if (p.socketId) {
+      sendSnapshot(room, snapshot, p.id);
+    }
+  }
+}
+
+io.on("connection", socket => {
+
+  // =========================
+  // CRIAR SALA
+  // =========================
+  socket.on("create_room", ({ name, gameMode }) => {
+
+    if (socket.roomCode) return;
+
+    const code = makeCode();
+
+    const room = {
+      code,
+
+      gameMode:
+        gameMode === "paulista"
+          ? "paulista"
+          : "mineiro",
+
+      hostId: socket.id,
+
+      started: false,
+
+      lastState: null,
+
+      players: [
+
+        {
+          id: 0,
+          name: String(name || "Jogador 1").slice(0, 18),
+          team: 0,
+          avatar: "😎",
+          socketId: socket.id
+        },
+
+        {
+          id: 1,
+          name: "Jogador 2",
+          team: 0,
+          avatar: "🧔",
+          socketId: null
+        },
+
+        {
+          id: 2,
+          name: "Jogador 3",
+          team: 1,
+          avatar: "👨‍🌾",
+          socketId: null
+        },
+
+        {
+          id: 3,
+          name: "Jogador 4",
+          team: 1,
+          avatar: "🧢",
+          socketId: null
+        }
+
+      ]
+    };
+
+    rooms.set(code, room);
+
+    socket.join(code);
+
+    socket.roomCode = code;
+    socket.playerId = 0;
+
+    socket.emit("room_created", {
+      code,
+      playerId: 0
+    });
+
+    socket.emit("room_joined", {
+      code,
+      playerId: 0,
+      gameMode: room.gameMode,
+      players: publicPlayers(room)
+    });
+
+    emitPlayers(room);
+  });
+
+
+  // =========================
+  // ENTRAR NA SALA
+  // =========================
+  socket.on("join_room", ({ name, code }) => {
+
+    code = String(code || "")
+      .trim()
+      .toUpperCase();
+
+    const room = rooms.get(code);
+
+    if (!room) {
+      socket.emit("error", {
+        message: "Sala não encontrada."
+      });
+
+      return;
+    }
+
+    const empty = room.players.find(
+      p => !p.socketId
+    );
+
+    if (!empty) {
+
+      socket.emit("error", {
+        message:
+          "Essa sala já está cheia (4 jogadores)."
+      });
+
+      return;
+    }
+
+    if (room.started) {
+
+      socket.emit("error", {
+        message:
+          "Essa partida já começou."
+      });
+
+      return;
+    }
+
+    empty.socketId = socket.id;
+
+    empty.name = String(
+      name ||
+      `Jogador ${empty.id + 1}`
+    ).slice(0, 18);
+
+    socket.join(code);
+
+    socket.roomCode = code;
+    socket.playerId = empty.id;
+
+    socket.emit("room_joined", {
+      code,
+      playerId: empty.id,
+      gameMode: room.gameMode,
+      players: publicPlayers(room)
+    });
+
+    emitPlayers(room);
+
+    const connected =
+      room.players.filter(
+        p => p.socketId
+      ).length;
+
+    // Quando os 4 jogadores entrarem,
+    // a sala fica pronta.
+    if (connected === 4) {
+
+      room.started = true;
+
+      io.to(room.hostId).emit(
+        "all_players_ready",
+        {
+          players: publicPlayers(room)
+        }
+      );
+    }
+  });
+
+
+  // =========================
+  // ESTADO DA PARTIDA
+  // =========================
   socket.on("state", snapshot => {
-    const [code, room] = roomOf(socket);
-    if (!room || room.host !== socket.id) return;
-    room.lastState = snapshot;
-    sendSnapshot(room, snapshot);
-  });
 
-  socket.on("action", action => {
     const [code, room] = roomOf(socket);
-    if (!room || room.host !== socket.id && room.guest !== socket.id) return;
 
-    // Só o convidado pode enviar comandos para o anfitrião.
-    if (socket.id === room.guest) {
-      io.to(room.host).emit("guest_action", action);
-    }
-  });
-
-  socket.on("disconnect", () => {
-    const [code, room] = roomOf(socket);
     if (!room) return;
-    if (room.host === socket.id) {
-      if (room.guest) io.to(room.guest).emit("room_closed");
-      rooms.delete(code);
-    } else if (room.guest === socket.id) {
-      room.guest = null;
-      room.guestName = null;
-      io.to(room.host).emit("host_message", {text: "O outro jogador saiu da sala."});
+
+    // Apenas o jogador 1
+    // mantém a lógica principal da partida.
+    if (room.hostId !== socket.id) {
+      return;
+    }
+
+    broadcastState(room, snapshot);
+  });
+
+
+  // =========================
+  // PEDIR ESTADO ATUAL
+  // =========================
+  socket.on("request_state", ({ code }) => {
+
+    code = String(code || "")
+      .trim()
+      .toUpperCase();
+
+    const room = rooms.get(code);
+
+    if (
+      !room ||
+      !room.started ||
+      !room.lastState
+    ) {
+      return;
+    }
+
+    const pid = socket.playerId;
+
+    if (
+      !room.players[pid] ||
+      room.players[pid].socketId !== socket.id
+    ) {
+      return;
+    }
+
+    sendSnapshot(
+      room,
+      room.lastState,
+      pid
+    );
+  });
+
+
+  // =========================
+  // AÇÕES DOS JOGADORES
+  // =========================
+  socket.on("action", action => {
+
+    const [code, room] = roomOf(socket);
+
+    if (!room) return;
+
+    const player =
+      room.players[socket.playerId];
+
+    if (
+      !player ||
+      player.socketId !== socket.id
+    ) {
+      return;
+    }
+
+    // O servidor ignora um playerId falso
+    // enviado pelo navegador e usa o ID real
+    // da conexão.
+    const cleanAction = {
+      ...(action || {}),
+      playerId: player.id
+    };
+
+    // Jogador 1 é o anfitrião.
+    // Os outros três enviam suas ações
+    // para ele executar a lógica da partida.
+    if (player.id !== 0) {
+
+      io.to(room.hostId).emit(
+        "player_action",
+        cleanAction
+      );
     }
   });
+
+
+  // =========================
+  // DESCONECTOU
+  // =========================
+  socket.on("disconnect", () => {
+
+    const [code, room] = roomOf(socket);
+
+    if (!room) return;
+
+    const player =
+      room.players[socket.playerId];
+
+    if (
+      player &&
+      player.socketId === socket.id
+    ) {
+
+      const name = player.name;
+
+      player.socketId = null;
+
+      // Se o anfitrião sair,
+      // encerra a sala.
+      if (player.id === 0) {
+
+        if (
+          room.players.some(
+            p => p.socketId
+          )
+        ) {
+
+          io.to(code).emit(
+            "room_closed"
+          );
+        }
+
+        rooms.delete(code);
+
+        return;
+      }
+
+      // Se qualquer outro sair,
+      // a partida deixa de estar pronta
+      // até ele voltar.
+      if (room.started) {
+        room.started = false;
+      }
+
+      io.to(code).emit(
+        "player_left",
+        {
+          id: player.id,
+          name
+        }
+      );
+
+      emitPlayers(room);
+    }
+  });
+
 });
 
-const PORT = process.env.PORT || 3000;
+
+const PORT =
+  process.env.PORT || 3000;
+
 server.listen(PORT, () => {
-  console.log(`Truco Online rodando na porta ${PORT}`);
+
+  console.log(
+    `Truco Online 4 jogadores rodando na porta ${PORT}`
+  );
+
 });
