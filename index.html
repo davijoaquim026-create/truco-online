@@ -1383,12 +1383,26 @@ async function createOnlineRoom(){
   try{
     const name=(document.getElementById("onlineName").value||"Jogador 1").trim().slice(0,18)||"Jogador 1";
     const mode=document.getElementById("modeSel")?.value||"mineiro";
-    await ensureOnlineConnection();onlineMode=true;onlineRole="host";localPlayerId=0;
-    setOnlineStatus("Criando sala...");
-    onlineSocket.emit("create_room",{name,gameMode:mode});
-    onlineSocket.once("room_created",data=>{
-      onlineRoomCode=data.code;document.getElementById("onlineJoinBox").classList.add("hidden");document.getElementById("onlineRoomInfo").classList.remove("hidden");document.getElementById("roomCode").textContent=data.code;document.getElementById("onlineRoomText").textContent="Sala criada!";setOnlineStatus("Sala criada. Aguardando mais 3 jogadores...");
-    });
+    await ensureOnlineConnection();
+onlineMode=true;
+onlineRole="host";
+localPlayerId=0;
+
+setOnlineStatus("Criando sala...");
+
+onlineSocket.once("room_created",data=>{
+  onlineRoomCode=data.code;
+
+  document.getElementById("onlineJoinBox").classList.add("hidden");
+  document.getElementById("onlineRoomInfo").classList.remove("hidden");
+
+  document.getElementById("roomCode").textContent=data.code;
+  document.getElementById("onlineRoomText").textContent="Sala criada!";
+
+  setOnlineStatus("Sala criada. Aguardando mais 3 jogadores...");
+});
+
+onlineSocket.emit("create_room",{name,gameMode:mode});
   }catch(e){console.error(e);setOnlineStatus("Erro ao conectar: "+(e?.message||"falha desconhecida"));}
 }
 async function joinOnlineRoom(){
