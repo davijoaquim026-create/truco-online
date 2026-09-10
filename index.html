@@ -1338,7 +1338,9 @@ function ensureOnlineConnection(){
         onlineRoomCode=data.code;
         onlinePlayers=data.players||[];
         onlineMode=true;
-        document.getElementById("onlineModal").classList.add("hidden");
+        if(Number(data.playerId)!==0){
+  document.getElementById("onlineModal").classList.add("hidden");
+}
         document.getElementById("menu").classList.add("hidden");
         document.getElementById("game").classList.remove("hidden");
         gameState.gameMode=data.gameMode||document.getElementById("modeSel")?.value||"mineiro";
