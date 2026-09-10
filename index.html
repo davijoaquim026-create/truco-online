@@ -91,7 +91,7 @@ box-shadow:inset 0 0 0 5px #2c170b,inset 0 0 60px #001d0f,0 25px 70px #000}
 .winner{outline:3px solid #ffe58a;box-shadow:0 0 22px #ffe58a99,0 8px 14px #0008}
 
 .status{position:absolute;left:50%;top:72%;transform:translateX(-50%);z-index:40;background:#06130fe8;border:1px solid #779482;border-radius:18px;padding:8px 16px;white-space:nowrap;box-shadow:0 5px 20px #0008;font-size:14px}
-.actions{position:absolute;bottom:17px;right:18px;z-index:120;pointer-events:auto;display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;max-width:310px}
+.actions{position:absolute;bottom:17px;right:18px;z-index:45;display:flex;gap:7px;flex-wrap:wrap;justify-content:flex-end;max-width:310px}
 .action{padding:11px 15px;border:1px solid #c28b38;border-radius:11px;background:linear-gradient(#a96c1f,#63390e);color:white;font-weight:bold;cursor:pointer;box-shadow:0 4px 10px #0008}
 .action:disabled{opacity:.35;cursor:not-allowed} .blind-btn{position:absolute;right:18px;bottom:135px;z-index:46;padding:13px 18px;border:2px solid #8993c2;border-radius:13px;background:linear-gradient(#273a70,#111d42);color:#fff;font-weight:900;cursor:pointer;box-shadow:0 0 18px #6677bb66,0 5px 12px #0009;animation:blindPulse 1.6s infinite}.blind-btn:hover{filter:brightness(1.18);transform:translateY(-2px)}@keyframes blindPulse{50%{box-shadow:0 0 28px #9aaaff99,0 5px 12px #0009}}
 .log{position:absolute;left:18px;bottom:17px;z-index:40;width:min(280px,31vw);background:#07140fe0;border:1px solid #688071;border-radius:12px;padding:9px;font-size:11px;box-shadow:0 5px 15px #0008}
@@ -1051,6 +1051,7 @@ function thinkDelay(){
    IA DE CARTAS
 ========================= */
 function aiTurn(){
+ if(typeof onlineMode!=="undefined"&&onlineMode)return;
  if(gameState.phase!=="play"||gameState.raisePending||gameState.turn===0)return;
  if(onlineMode&&onlineRole==="host"&&gameState.turn===1)return;
  if(onlineMode&&onlineRole==="guest")return;
@@ -1276,376 +1277,153 @@ function backMenu(){
 }
 
 /* =========================
-   MULTIPLAYER ONLINE
-   O cliente host continua usando a lógica original da partida.
-   O servidor apenas retransmite snapshots e ações do convidado.
+   MULTIPLAYER ONLINE — 4 JOGADORES REAIS
+   Dupla 1: jogador 1 + jogador 2
+   Dupla 2: jogador 3 + jogador 4
 ========================= */
 let onlineMode=false;
-let onlineRole=null;
+let onlineRole=null; // host ou player
 let localPlayerId=0;
 let onlineSocket=null;
 let onlineRoomCode="";
-let onlineGuestReady=false;
 let onlineStateTimer=null;
-let lastOnlineHandsSignature="";
-let lastOnlineCenterSignature="";
-let lastOnlineActionsSignature="";
+let onlinePlayers=[];
+let onlineStarted=false;
 
 function setOnlineStatus(msg){
   const el=document.getElementById("onlineStatus");
   if(el)el.textContent=msg;
 }
-
 function openOnline(){
   document.getElementById("onlineModal").classList.remove("hidden");
   document.getElementById("onlineJoinBox").classList.add("hidden");
   document.getElementById("onlineRoomInfo").classList.add("hidden");
   setOnlineStatus("Conecte-se ao servidor para criar ou entrar em uma sala.");
 }
-
 function closeOnline(){
   if(onlineSocket){onlineSocket.disconnect();onlineSocket=null;}
-  onlineMode=false;onlineRole=null;onlineRoomCode="";onlineGuestReady=false;lastOnlineHandsSignature="";lastOnlineCenterSignature="";lastOnlineActionsSignature="";
+  onlineMode=false;onlineRole=null;localPlayerId=0;onlineRoomCode="";onlinePlayers=[];onlineStarted=false;
   if(onlineStateTimer){clearInterval(onlineStateTimer);onlineStateTimer=null;}
   document.getElementById("onlineModal").classList.add("hidden");
 }
-
 function showJoinOnline(){
   document.getElementById("onlineJoinBox").classList.remove("hidden");
   document.getElementById("onlineRoomInfo").classList.add("hidden");
   setOnlineStatus("");
 }
-
-async function ensureOnlineConnection(){
-  if(onlineSocket && onlineSocket.connected)return;
-  try{
-    await window.__socketIoReady;
-  }catch(e){
-    throw new Error("Socket.IO não carregou.");
+async function ensureSocketIO(){
+  if(typeof io==="function")return;
+  for(const src of ["/socket.io/socket.io.js","https://cdn.socket.io/4.8.1/socket.io.min.js"]){
+    try{
+      await new Promise((resolve,reject)=>{const s=document.createElement("script");s.src=src;s.async=true;s.onload=resolve;s.onerror=reject;document.head.appendChild(s);});
+      if(typeof io==="function")return;
+    }catch(e){}
   }
-  if(typeof io!=="function")throw new Error("Socket.IO não carregou.");
-  await new Promise((resolve,reject)=>{
-    onlineSocket=io("https://truco-online-x7hi.onrender.com",{
-      transports:["websocket","polling"],
-      timeout:10000
-    });
-    const done=()=>{cleanup();resolve();};
-    const fail=(err)=>{cleanup();reject(err);};
-    const cleanup=()=>{
-      onlineSocket?.off("connect",done);
-      onlineSocket?.off("connect_error",fail);
-    };
-    onlineSocket.once("connect",done);
-    onlineSocket.once("connect_error",fail);
-    onlineSocket.on("error",data=>setOnlineStatus(data?.message||"Erro na conexão."));
-    onlineSocket.on("room_closed",()=>{
-      setOnlineStatus("A sala foi encerrada.");
-      toast("Sala encerrada.");
-      setTimeout(()=>backMenu(),700);
-    });
-    onlineSocket.on("guest_joined",data=>{
-      if(onlineRole==="host"){
-        onlineGuestReady=true;
-        setOnlineStatus(`${data.name} entrou. Iniciando partida...`);
-        startOnlineHost(data.name);
-      }
-    });
-    onlineSocket.on("guest_action",action=>{
-      if(onlineRole!=="host"||!onlineGuestReady||!action)return;
-      const pid=Number(action.playerId);
-      if(pid!==1)return;
-      if(action.type==="playCard")_originalPlayCard(1,Number(action.index));
-      else if(action.type==="requestRaise")_originalRequestRaise(1,Number(action.value));
-      else if(action.type==="counterRaise")_originalCounterRaise(1,Number(action.value));
-      else if(action.type==="respondRaise"){
-        gameState.respondingPlayerId=1;
-        _originalRespondRaise(action.decision);
-      } else if(action.type==="acceptSpecialHand"){
-        gameState.respondingPlayerId=1;
-        _originalAcceptSpecialHand();
-      } else if(action.type==="runSpecialHand"){
-        gameState.respondingPlayerId=1;
-        _originalRunSpecialHand();
-      }
-      broadcastOnlineState();
-    });
-    function nameForOnlineGuest(){
-  return (document.getElementById("onlineName")?.value||"Você").trim().slice(0,18)||"Você";
+  throw new Error("Socket.IO não carregou.");
 }
-    onlineSocket.on("room_joined",data=>{
-      onlineRole="guest";localPlayerId=1;onlineRoomCode=data.code;lastOnlineHandsSignature="";lastOnlineCenterSignature="";lastOnlineActionsSignature="";
-      document.getElementById("onlineModal").classList.add("hidden");
-      document.getElementById("menu").classList.add("hidden");
-      document.getElementById("game").classList.remove("hidden");
-      onlineMode=true;
-      gameState.gameMode=data.gameMode||document.getElementById("modeSel")?.value||"mineiro";
-      gameState.phase="waiting";
-      gameState.players[1].name=nameForOnlineGuest();
-      updateOnlinePerspective();
-      status("Conectado. Aguardando o anfitrião iniciar...");
-      renderScores();updateModeUI();
+function ensureOnlineConnection(){
+  if(onlineSocket&&onlineSocket.connected)return Promise.resolve();
+  return (async()=>{
+    await ensureSocketIO();
+    await new Promise((resolve,reject)=>{
+      onlineSocket=io("https://truco-online-x7hi.onrender.com",{transports:["websocket","polling"],timeout:10000});
+      const done=()=>{cleanup();resolve();};
+      const fail=e=>{cleanup();reject(e||new Error("Falha de conexão"));};
+      const cleanup=()=>{onlineSocket?.off("connect",done);onlineSocket?.off("connect_error",fail);};
+      onlineSocket.once("connect",done);onlineSocket.once("connect_error",fail);
+      onlineSocket.on("error",data=>setOnlineStatus(data?.message||"Erro na conexão."));
+      onlineSocket.on("room_joined",data=>{
+        onlineRole=Number(data.playerId)===0?"host":"player";
+        localPlayerId=Number(data.playerId);
+        onlineRoomCode=data.code;
+        onlinePlayers=data.players||[];
+        onlineMode=true;
+        document.getElementById("onlineModal").classList.add("hidden");
+        document.getElementById("menu").classList.add("hidden");
+        document.getElementById("game").classList.remove("hidden");
+        gameState.gameMode=data.gameMode||document.getElementById("modeSel")?.value||"mineiro";
+        gameState.phase="waiting";
+        for(const info of onlinePlayers){const p=getPlayer(Number(info.id));if(p){p.name=info.name||p.name;p.team=Number(info.team??p.team);}}
+        if(gameState.players[localPlayerId])gameState.players[localPlayerId].name="Você";
+        updateOnlinePerspective();renderScores();updateModeUI();renderOnlineActions();
+        if(localPlayerId===0) setOnlineStatus("Sala criada. Aguardando mais 3 jogadores...");
+        else setOnlineStatus("Você entrou na sala. Aguardando a partida começar...");
+      });
+      onlineSocket.on("players_update",data=>{
+        onlinePlayers=data.players||[];
+        for(const info of onlinePlayers){const p=getPlayer(Number(info.id));if(p){p.name=info.name||p.name;p.team=Number(info.team??p.team);}}
+        if(gameState.players[localPlayerId])gameState.players[localPlayerId].name="Você";
+        updateOnlinePerspective();
+        if(!onlineStarted){
+          const count=onlinePlayers.filter(p=>p.connected&&!p.bot).length;
+          setOnlineStatus(`Jogadores na sala: ${count}/4 — aguardando ${Math.max(0,4-count)}...`);
+        }
+      });
+      onlineSocket.on("all_players_ready",data=>{if(onlineRole==="host")startOnlineHost(data.players||onlinePlayers);});
+      onlineSocket.on("state",snapshot=>{if(onlineRole!=="host")applyOnlineSnapshot(snapshot);});
+      onlineSocket.on("player_action",action=>{
+        if(onlineRole!=="host"||!action)return;
+        const pid=Number(action.playerId); if(![1,2,3].includes(pid))return;
+        try{
+          if(action.type==="playCard")_originalPlayCard(pid,Number(action.index));
+          else if(action.type==="requestRaise")_originalRequestRaise(pid,Number(action.value));
+          else if(action.type==="counterRaise")_originalCounterRaise(pid,Number(action.value));
+          else if(action.type==="respondRaise"){gameState.respondingPlayerId=pid;_originalRespondRaise(action.decision);}
+          else if(action.type==="acceptSpecialHand"){gameState.respondingPlayerId=pid;_originalAcceptSpecialHand();}
+          else if(action.type==="runSpecialHand"){gameState.respondingPlayerId=pid;_originalRunSpecialHand();}
+        }catch(e){console.error("[TRUCO ONLINE] ação inválida",e)}
+        broadcastOnlineState();
+      });
+      onlineSocket.on("player_left",data=>setOnlineStatus(`${data?.name||"Um jogador"} saiu da sala.`));
+      onlineSocket.on("room_closed",()=>{setOnlineStatus("A sala foi encerrada.");toast("Sala encerrada.");setTimeout(()=>backMenu(),700);});
     });
-    onlineSocket.on("state",snapshot=>{
-      if(onlineRole!=="guest")return;
-      applyOnlineSnapshot(snapshot);
-    });
-    onlineSocket.on("host_message",msg=>{
-      if(msg?.text)status(msg.text);
-    });
-  });
+  })();
 }
-
 async function createOnlineRoom(){
   try{
-    const name=(document.getElementById("onlineName").value||"Jogador").trim().slice(0,18)||"Jogador";
-    await ensureOnlineConnection();
-    onlineMode=true;onlineRole="host";localPlayerId=0;lastOnlineHandsSignature="";lastOnlineCenterSignature="";lastOnlineActionsSignature="";
+    const name=(document.getElementById("onlineName").value||"Jogador 1").trim().slice(0,18)||"Jogador 1";
     const mode=document.getElementById("modeSel")?.value||"mineiro";
-    onlineSocket.emit("create_room",{name,gameMode:mode});
+    await ensureOnlineConnection();onlineMode=true;onlineRole="host";localPlayerId=0;
     setOnlineStatus("Criando sala...");
+    onlineSocket.emit("create_room",{name,gameMode:mode});
     onlineSocket.once("room_created",data=>{
-      onlineRoomCode=data.code;
-      document.getElementById("onlineJoinBox").classList.add("hidden");
-      document.getElementById("onlineRoomInfo").classList.remove("hidden");
-      document.getElementById("roomCode").textContent=data.code;
-      document.getElementById("onlineRoomText").textContent="Sala criada!";
-      setOnlineStatus("Aguardando o outro jogador...");
+      onlineRoomCode=data.code;document.getElementById("onlineJoinBox").classList.add("hidden");document.getElementById("onlineRoomInfo").classList.remove("hidden");document.getElementById("roomCode").textContent=data.code;document.getElementById("onlineRoomText").textContent="Sala criada!";setOnlineStatus("Sala criada. Aguardando mais 3 jogadores...");
     });
-  }catch(e){setOnlineStatus("Não foi possível conectar ao servidor.");}
+  }catch(e){console.error(e);setOnlineStatus("Erro ao conectar: "+(e?.message||"falha desconhecida"));}
 }
-
 async function joinOnlineRoom(){
   try{
     const name=(document.getElementById("onlineName").value||"Jogador").trim().slice(0,18)||"Jogador";
     const code=(document.getElementById("roomCodeInput").value||"").trim().toUpperCase();
     if(!code){setOnlineStatus("Digite o código da sala.");return;}
-    await ensureOnlineConnection();
-    onlineMode=true;
-    onlineSocket.emit("join_room",{name,code});
-    setOnlineStatus("Entrando na sala...");
-  }catch(e){setOnlineStatus("Não foi possível conectar ao servidor.");}
+    await ensureOnlineConnection();onlineMode=true;onlineSocket.emit("join_room",{name,code});setOnlineStatus("Entrando na sala...");
+  }catch(e){console.error(e);setOnlineStatus("Erro ao conectar: "+(e?.message||"falha desconhecida"));}
 }
-
-function startOnlineHost(guestName){
+function startOnlineHost(players){
   gameState.gameMode=document.getElementById("modeSel")?.value||"mineiro";
-  gameState.players[0].name=(document.getElementById("onlineName").value||"Jogador").trim().slice(0,18)||"Jogador";
-  gameState.players[1].name=guestName||"Convidado";
-  gameState.players[2].name="Pedro";
-  gameState.players[3].name="Zé";
-  document.getElementById("onlineModal").classList.add("hidden");
-  document.getElementById("menu").classList.add("hidden");
-  document.getElementById("game").classList.remove("hidden");
-  gameState.scores=[0,0];gameState.dealer=0;gameState.phase="deal";
-  gameState.logs=[];gameState.isPlayingBlind=false;gameState.roundBlind=false;gameState.blindBy=null;gameState.vira=null;
+  const teamById={0:0,1:0,2:1,3:1};
+  for(let i=0;i<4;i++){const info=players.find(x=>Number(x.id)===i);gameState.players[i].team=teamById[i];gameState.players[i].name=info?.name||`Jogador ${i+1}`;}
+  document.getElementById("onlineModal").classList.add("hidden");document.getElementById("menu").classList.add("hidden");document.getElementById("game").classList.remove("hidden");onlineStarted=true;
+  gameState.scores=[0,0];gameState.dealer=0;gameState.phase="deal";gameState.logs=[];gameState.isPlayingBlind=false;gameState.roundBlind=false;gameState.blindBy=null;gameState.vira=null;
   renderScores();updateModeUI();newHand();
-  if(onlineStateTimer)clearInterval(onlineStateTimer);
-  onlineStateTimer=setInterval(broadcastOnlineState,250);
-  broadcastOnlineState();
+  if(onlineStateTimer)clearInterval(onlineStateTimer);onlineStateTimer=setInterval(broadcastOnlineState,500);broadcastOnlineState();
 }
-
-function serializeOnlineState(){
-  return JSON.parse(JSON.stringify({
-    gameMode:gameState.gameMode,
-    players:gameState.players.map(p=>({
-      id:p.id,name:p.name,team:p.team,avatar:p.avatar,
-      cards:p.cards.map(c=>({id:c.id,rank:c.rank,suit:c.suit,suitName:c.suitName,symbol:c.symbol,red:c.red,manilha:c.manilha}))
-    })),
-    scores:gameState.scores,
-    dealer:gameState.dealer,turn:gameState.turn,leader:gameState.leader,
-    trick:gameState.trick.map(x=>({playerId:x.playerId,card:x.card,cardIndex:x.cardIndex,hidden:!!x.hidden})),
-    trickNo:gameState.trickNo,trickWins:gameState.trickWins,
-    handValue:gameState.handValue,targetValue:gameState.targetValue,
-    phase:gameState.phase,raisingBy:gameState.raisingBy,raisePending:gameState.raisePending,
-    lastTrickWinner:gameState.lastTrickWinner,lastTrickTied:gameState.lastTrickTied,
-    trickResults:gameState.trickResults,handWinner:gameState.handWinner,
-    isPlayingBlind:!!gameState.isPlayingBlind,roundBlind:!!gameState.roundBlind,blindBy:gameState.blindBy,
-    vira:gameState.vira,logs:gameState.logs
-  }));
-}
-
-function broadcastOnlineState(){
-  if(!onlineSocket||!onlineSocket.connected||onlineRole!=="host")return;
-  onlineSocket.emit("state",serializeOnlineState());
-}
-
+function serializeOnlineState(){return JSON.parse(JSON.stringify({gameMode:gameState.gameMode,players:gameState.players.map(p=>({id:p.id,name:p.name,team:p.team,avatar:p.avatar,cards:p.cards.map(c=>({id:c.id,rank:c.rank,suit:c.suit,suitName:c.suitName,symbol:c.symbol,red:c.red,manilha:c.manilha}))})),scores:gameState.scores,dealer:gameState.dealer,turn:gameState.turn,leader:gameState.leader,trick:gameState.trick.map(x=>({playerId:x.playerId,card:x.card,cardIndex:x.cardIndex,hidden:!!x.hidden})),trickNo:gameState.trickNo,trickWins:gameState.trickWins,handValue:gameState.handValue,targetValue:gameState.targetValue,phase:gameState.phase,raisingBy:gameState.raisingBy,raisePending:gameState.raisePending,raiseTeam:gameState.raiseTeam,lastTrickWinner:gameState.lastTrickWinner,lastTrickTied:gameState.lastTrickTied,trickResults:gameState.trickResults,handWinner:gameState.handWinner,isPlayingBlind:!!gameState.isPlayingBlind,roundBlind:!!gameState.roundBlind,blindBy:gameState.blindBy,vira:gameState.vira,logs:gameState.logs}));}
+function broadcastOnlineState(){if(!onlineSocket||!onlineSocket.connected||onlineRole!=="host"||!onlineStarted)return;onlineSocket.emit("state",serializeOnlineState());}
 function getOnlineSeatPlayerIds(){
-  // Mantém a mesma lógica física da mesa, mas coloca o jogador local embaixo,
-  // o parceiro na frente e os dois adversários nas laterais.
-  if(localPlayerId===1)return {0:1,1:0,2:3,3:2};
-  return {0:0,1:1,2:2,3:3};
+  if(!onlineMode)return {0:0,1:1,2:2,3:3};
+  const local=getPlayer(localPlayerId);const partner=gameState.players.find(p=>p.team===local?.team&&p.id!==localPlayerId);const opponents=gameState.players.filter(p=>p.id!==localPlayerId&&p.id!==partner?.id);
+  return {0:localPlayerId,1:opponents[0]?.id,2:partner?.id,3:opponents[1]?.id};
 }
-
-function getOnlineSeatForPlayer(playerId){
-  const map=getOnlineSeatPlayerIds();
-  for(const seat of [0,1,2,3])if(map[seat]===playerId)return seat;
-  return null;
-}
-
-function renderOnlinePlayers(){
-  if(!onlineMode)return;
-  const map=getOnlineSeatPlayerIds();
-  const local=getPlayer(localPlayerId);
-  const partner=gameState.players.find(p=>p.team===local?.team&&p.id!==localPlayerId);
-  const seatRoles={
-    0:'VOCÊ',
-    1:'ADVERSÁRIO • SUA ESQUERDA',
-    2:'SEU PARCEIRO • À SUA FRENTE',
-    3:'ADVERSÁRIO • SUA DIREITA'
-  };
-  for(const seat of [0,1,2,3]){
-    const player=getPlayer(map[seat]);
-    const el=document.getElementById('p'+seat);
-    if(!el||!player)continue;
-    const nameEl=el.querySelector('.name');
-    const roleEl=el.querySelector('.role');
-    const avatarEl=el.querySelector('.avatar');
-    if(nameEl)nameEl.textContent=player.id===localPlayerId?'Você':player.name;
-    if(roleEl)roleEl.textContent=seat===0?'VOCÊ':(player.id===partner?.id?'SEU PARCEIRO • À SUA FRENTE':seatRoles[seat]);
-    if(avatarEl)avatarEl.textContent=player.avatar||'🙂';
-  }
-}
-
-function updateOnlinePerspective(){
-  if(!onlineMode)return;
-  renderOnlinePlayers();
-  document.querySelectorAll('.hand').forEach(h=>h.classList.remove('online-local-hand'));
-  const localSeat=getOnlineSeatForPlayer(localPlayerId);
-  const localHand=document.getElementById('hand'+({0:0,1:2,2:1,3:3}[localSeat]));
-  if(localHand)localHand.classList.add('online-local-hand');
-}
-
-function renderOnlineTurn(){
-  const map=getOnlineSeatPlayerIds();
-  document.querySelectorAll('.player').forEach(el=>el.classList.remove('turn'));
-  const seat=getOnlineSeatForPlayer(gameState.turn);
-  if(seat!==null)document.getElementById('p'+seat)?.classList.add('turn');
-}
-
-function applyOnlineSnapshot(s){
-  if(!s)return;
-  const preserved={
-    sound:gameState.sound,animationSpeed:gameState.animationSpeed,difficulty:gameState.difficulty,
-    aiMemory:gameState.aiMemory||{actions:[],players:{},playedCards:[]}
-  };
-  Object.assign(gameState,s,preserved);
-  gameState.phase=s.phase;
-  gameState.players=(s.players||[]).map(p=>({...p,cards:p.cards||[]}));
-
-  const handsSig=(gameState.players||[]).map(p=>`${p.id}:${(p.cards||[]).map(c=>c?.id||"_").join(",")}`).join("|");
-  const centerSig=(gameState.trick||[]).map(x=>`${x.playerId}:${x.card?.id||"_"}:${x.hidden?1:0}`).join("|");
-  const actionsSig=`${gameState.phase}|${gameState.turn}|${gameState.raisePending}|${gameState.raiseTeam}|${gameState.targetValue}|${gameState.trickNo}|${gameState.handValue}`;
-
-  updateOnlinePerspective();
-  renderScores();
-  updateModeUI();
-  renderOnlineTurn();
-
-  // O servidor envia snapshots frequentemente. Não reconstruímos as cartas a cada snapshot,
-  // pois isso fazia a mão do convidado parecer "tremendo".
-  if(handsSig!==lastOnlineHandsSignature){
-    lastOnlineHandsSignature=handsSig;
-    renderOnlineHands();
-  }
-  if(centerSig!==lastOnlineCenterSignature){
-    lastOnlineCenterSignature=centerSig;
-    renderCenter();
-  }
-  if(actionsSig!==lastOnlineActionsSignature){
-    lastOnlineActionsSignature=actionsSig;
-    renderOnlineActions();
-  }
-
-  if(gameState.phase==="play"){
-    status(gameState.turn===localPlayerId?"🟢 Sua vez":"⏳ Aguardando a vez do adversário...");
-  }
-  if(gameState.phase==="matchEnd"&&gameState.handWinner!==null)showVictoryOnline(gameState.handWinner);
-}
-
-function renderOnlineHands(){
-  const map=getOnlineSeatPlayerIds();
-  document.querySelectorAll('.hand').forEach(h=>h.classList.remove('online-local-hand'));
-  const localTeam=getPlayer(localPlayerId)?.team;
-  const teammate=gameState.players.find(x=>x.team===localTeam&&x.id!==localPlayerId);
-
-  for(const seat of [0,1,2,3]){
-    const playerId=map[seat];
-    const p=getPlayer(playerId);
-    const handId={0:0,1:2,2:1,3:3}[seat];
-    const el=document.getElementById('hand'+handId);
-    if(!el||!p)continue;
-    const canReveal=playerId===localPlayerId||playerId===teammate?.id;
-    el.innerHTML=(p.cards||[]).map(c=>cardHTML(c,!canReveal)).join('');
-  }
-
-  const localSeat=getOnlineSeatForPlayer(localPlayerId);
-  const localHandId={0:0,1:2,2:1,3:3}[localSeat];
-  const localHand=document.getElementById('hand'+localHandId);
-  if(localHand)localHand.classList.add('online-local-hand');
-
-  const mine=getPlayer(localPlayerId);
-  if(mine&&localHand){
-    localHand.querySelectorAll('.card').forEach((el,idx)=>{
-      el.onclick=()=>{
-        if(gameState.turn===localPlayerId&&gameState.phase==='play'&&!gameState.raisePending){
-          onlineSocket?.emit('action',{type:'playCard',playerId:localPlayerId,index:idx});
-        }
-      };
-    });
-  }
-}
-
-function renderOnlineActions(){
-  const a=document.getElementById("actions");
-  a.innerHTML="";
-  a.style.pointerEvents="auto";
-  const blind=document.getElementById("blindBtn");
-  if(blind)blind.classList.add("hidden");
-  if(gameState.phase==="matchEnd"||gameState.phase==="handEnd"||gameState.phase==="waiting")return;
-  if(gameState.phase==="specialDecision" && gameState.specialTeam===gameState.players[localPlayerId]?.team){
-    const m=document.getElementById("modal"),c=document.getElementById("modalCard");
-    m.classList.remove("hidden");
-    c.innerHTML=`<h2>⚠️ MÃO ESPECIAL</h2>
-      <p>Sua dupla está com ${getRules().special} pontos.</p>
-      <p>Escolha <b>JOGAR</b> para continuar ou <b>CORRER</b> para entregar ${getRules().runAward} ponto(s) à outra dupla.</p>
-      <div class="choice-row">
-        <button class="action" onclick="onlineSocket?.emit("action",{type:"acceptSpecialHand",playerId:localPlayerId})">JOGAR</button>
-        <button class="action" onclick="onlineSocket?.emit("action",{type:"runSpecialHand",playerId:localPlayerId})">CORRER</button>
-      </div>`;
-    return;
-  }
-  if(gameState.raisePending){
-    if(gameState.raiseTeam===gameState.players[localPlayerId]?.team){
-      const accept=document.createElement("button");accept.className="action";accept.textContent="ACEITAR";accept.onclick=()=>onlineSocket?.emit("action",{type:"respondRaise",decision:"accept",playerId:localPlayerId});
-      const run=document.createElement("button");run.className="action";run.textContent="CORRER";run.onclick=()=>onlineSocket?.emit("action",{type:"respondRaise",decision:"run",playerId:localPlayerId});
-      const next=nextRaise(gameState.targetValue);
-      a.append(accept,run);
-      if(next){const up=document.createElement("button");up.className="action";up.textContent="AUMENTAR";up.onclick=()=>onlineSocket?.emit("action",{type:"counterRaise",value:next,playerId:localPlayerId});a.append(up);}
-    }
-    return;
-  }
-  if(gameState.turn!==localPlayerId)return;
-  if(canCallTruco(localPlayerId)){
-    const nv=nextRaise(gameState.handValue);
-    const b=document.createElement("button");b.className="action";b.textContent=nv===getRules().raises[1]?"TRUCO":nv;
-    b.onclick=()=>onlineSocket?.emit("action",{type:"requestRaise",value:nv,playerId:localPlayerId});a.appendChild(b);
-  }
-  if(localPlayerId===0&&gameState.trickNo===1&&gameState.trick.length===0){
-    const b=document.getElementById("blindBtn");if(b)b.classList.remove("hidden");
-  }
-}
-
-function showVictoryOnline(team){
-  gameState.phase="matchEnd";
-  const m=document.getElementById("modal"),c=document.getElementById("modalCard");
-  m.classList.remove("hidden");
-  c.innerHTML=`<h2 style="font-size:42px;text-align:center">🏆 VITÓRIA!</h2>
-  <p style="text-align:center;font-size:22px">Dupla ${team===0?"1":"2"} venceu a partida!</p>
-  <p style="text-align:center">${team===0?"Sua dupla":"A dupla adversária"} chegou a 12 pontos.</p>
-  <button class="menu-btn" onclick="location.reload()">VOLTAR AO MENU</button>`;
-}
-
-/* No modo online, somente o anfitrião executa a IA e a lógica real.
-   O convidado envia comandos e recebe o estado sincronizado. */
+function getOnlineSeatForPlayer(playerId){const map=getOnlineSeatPlayerIds();for(const seat of [0,1,2,3])if(map[seat]===playerId)return seat;return null;}
+function renderOnlinePlayers(){if(!onlineMode)return;const map=getOnlineSeatPlayerIds();const local=getPlayer(localPlayerId);const partner=gameState.players.find(p=>p.team===local?.team&&p.id!==localPlayerId);for(const seat of [0,1,2,3]){const player=getPlayer(map[seat]);const el=document.getElementById('p'+seat);if(!el||!player)continue;el.querySelector('.name').textContent=player.id===localPlayerId?'Você':player.name;el.querySelector('.role').textContent=seat===0?'VOCÊ':(player.id===partner?.id?'SEU PARCEIRO • À SUA FRENTE':`ADVERSÁRIO • SUA ${seat===1?'ESQUERDA':'DIREITA'}`);el.querySelector('.avatar').textContent=player.avatar||'🙂';}}
+function updateOnlinePerspective(){if(!onlineMode)return;renderOnlinePlayers();document.querySelectorAll('.hand').forEach(h=>h.classList.remove('online-local-hand'));const seat=getOnlineSeatForPlayer(localPlayerId);const hand=document.getElementById('hand'+({0:0,1:2,2:1,3:3}[seat]));if(hand)hand.classList.add('online-local-hand');}
+function renderOnlineTurn(){const seat=getOnlineSeatForPlayer(gameState.turn);document.querySelectorAll('.player').forEach(e=>e.classList.remove('turn'));if(seat!==null)document.getElementById('p'+seat)?.classList.add('turn');}
+function applyOnlineSnapshot(s){if(!s)return;const preserved={sound:gameState.sound,animationSpeed:gameState.animationSpeed,difficulty:gameState.difficulty,aiMemory:gameState.aiMemory||{actions:[],players:{},playedCards:[]}};Object.assign(gameState,s,preserved);gameState.players=(s.players||[]).map(p=>({...p,cards:p.cards||[]}));if(gameState.players[localPlayerId])gameState.players[localPlayerId].name="Você";onlineStarted=true;updateOnlinePerspective();renderScores();updateModeUI();renderOnlineHands();renderCenter();renderOnlineTurn();renderOnlineActions();if(gameState.phase==='play')status(gameState.turn===localPlayerId?'🟢 Sua vez':'⏳ Aguardando a vez do adversário...');}
+function renderOnlineHands(){const map=getOnlineSeatPlayerIds();document.querySelectorAll('.hand').forEach(h=>h.classList.remove('online-local-hand'));const localTeam=getPlayer(localPlayerId)?.team;const teammate=gameState.players.find(x=>x.team===localTeam&&x.id!==localPlayerId);for(const seat of [0,1,2,3]){const playerId=map[seat],p=getPlayer(playerId),handId={0:0,1:2,2:1,3:3}[seat],el=document.getElementById('hand'+handId);if(!el||!p)continue;const canReveal=playerId===localPlayerId||playerId===teammate?.id;el.innerHTML=(p.cards||[]).map(c=>cardHTML(c,!canReveal)).join('');}const localSeat=getOnlineSeatForPlayer(localPlayerId),localHand=document.getElementById('hand'+({0:0,1:2,2:1,3:3}[localSeat]));if(localHand)localHand.classList.add('online-local-hand');const mine=getPlayer(localPlayerId);if(mine&&localHand)localHand.querySelectorAll('.card').forEach((el,idx)=>{el.onclick=()=>{if(gameState.turn===localPlayerId&&gameState.phase==='play'&&!gameState.raisePending)onlineSendAction({type:'playCard',index:idx});};});}
+function onlineSendAction(action){if(onlineSocket?.connected)onlineSocket.emit('action',{...action,playerId:localPlayerId});}
+function renderOnlineActions(){const a=document.getElementById('actions');a.innerHTML='';document.getElementById('blindBtn')?.classList.add('hidden');if(['matchEnd','handEnd','waiting'].includes(gameState.phase))return;if(gameState.phase==='specialDecision'&&gameState.specialTeam===gameState.players[localPlayerId]?.team){const m=document.getElementById('modal'),c=document.getElementById('modalCard');m.classList.remove('hidden');c.innerHTML='<h2>⚠️ MÃO ESPECIAL</h2><p>Sua dupla está com '+getRules().special+' pontos.</p><div class="choice-row"><button class="action" id="spA">JOGAR</button><button class="action" id="spR">CORRER</button></div>';document.getElementById('spA').onclick=()=>onlineSendAction({type:'acceptSpecialHand'});document.getElementById('spR').onclick=()=>onlineSendAction({type:'runSpecialHand'});return;}if(gameState.raisePending){if(gameState.raiseTeam===gameState.players[localPlayerId]?.team){const accept=document.createElement('button');accept.className='action';accept.textContent='ACEITAR';accept.onclick=()=>onlineSendAction({type:'respondRaise',decision:'accept'});const run=document.createElement('button');run.className='action';run.textContent='CORRER';run.onclick=()=>onlineSendAction({type:'respondRaise',decision:'run'});a.append(accept,run);const next=nextRaise(gameState.targetValue);if(next){const up=document.createElement('button');up.className='action';up.textContent='AUMENTAR';up.onclick=()=>onlineSendAction({type:'counterRaise',value:next});a.append(up);}}return;}if(gameState.turn!==localPlayerId)return;if(canCallTruco(localPlayerId)){const nv=nextRaise(gameState.handValue);const b=document.createElement('button');b.className='action';b.textContent=nv===getRules().raises[1]?'TRUCO':String(nv);b.onclick=()=>onlineSendAction({type:'requestRaise',value:nv});a.appendChild(b);}}
+function showVictoryOnline(team){gameState.phase='matchEnd';const m=document.getElementById('modal'),c=document.getElementById('modalCard');m.classList.remove('hidden');c.innerHTML=`<h2 style="font-size:42px;text-align:center">🏆 VITÓRIA!</h2><p style="text-align:center;font-size:22px">${team===gameState.players[localPlayerId]?.team?'Sua dupla venceu!':'A dupla adversária venceu!'}</p><p style="text-align:center">A partida chegou a 12 pontos.</p><button class="menu-btn" onclick="location.reload()">VOLTAR AO MENU</button>`;}
 const _originalPlayCard=playCard;
 const _originalRequestRaise=requestRaise;
 const _originalCounterRaise=counterRaise;
@@ -1653,59 +1431,13 @@ const _originalRespondRaise=respondRaise;
 const _originalPlayBlind=playBlind;
 const _originalAcceptSpecialHand=acceptSpecialHand;
 const _originalRunSpecialHand=runSpecialHand;
-
-playCard=function(playerId,idx){
-  if(onlineMode&&onlineRole==="guest"){
-    if(playerId===localPlayerId)onlineSocket?.emit("action",{type:"playCard",playerId,index:idx});
-    return;
-  }
-  const result=_originalPlayCard(playerId,idx);
-  if(onlineMode&&onlineRole==="host")broadcastOnlineState();
-  return result;
-};
-requestRaise=function(playerId,value){
-  if(onlineMode&&onlineRole==="guest"){
-    if(playerId===localPlayerId)onlineSocket?.emit("action",{type:"requestRaise",playerId,value});
-    return;
-  }
-  const result=_originalRequestRaise(playerId,value);
-  if(onlineMode&&onlineRole==="host")broadcastOnlineState();
-  return result;
-};
-counterRaise=function(playerId,value){
-  if(onlineMode&&onlineRole==="guest"){
-    if(playerId===localPlayerId)onlineSocket?.emit("action",{type:"counterRaise",playerId,value});
-    return;
-  }
-  const result=_originalCounterRaise(playerId,value);
-  if(onlineMode&&onlineRole==="host")broadcastOnlineState();
-  return result;
-};
-respondRaise=function(decision){
-  if(onlineMode&&onlineRole==="guest"){
-    onlineSocket?.emit("action",{type:"respondRaise",playerId:localPlayerId,decision});
-    return;
-  }
-  const result=_originalRespondRaise(decision);
-  if(onlineMode&&onlineRole==="host")broadcastOnlineState();
-  return result;
-};
-playBlind=function(playerId=0){
-  if(onlineMode&&onlineRole==="guest")return false;
-  return _originalPlayBlind(playerId);
-};
-acceptSpecialHand=function(){
-  if(onlineMode&&onlineRole==="guest"){
-    onlineSocket?.emit("action",{type:"acceptSpecialHand",playerId:localPlayerId});return;
-  }
-  return _originalAcceptSpecialHand();
-};
-runSpecialHand=function(){
-  if(onlineMode&&onlineRole==="guest"){
-    onlineSocket?.emit("action",{type:"runSpecialHand",playerId:localPlayerId});return;
-  }
-  return _originalRunSpecialHand();
-};
+playCard=function(playerId,idx){if(onlineMode&&onlineRole!=="host"){if(playerId===localPlayerId)onlineSendAction({type:'playCard',index:idx});return;}return _originalPlayCard(playerId,idx);};
+requestRaise=function(playerId,value){if(onlineMode&&onlineRole!=="host"){if(playerId===localPlayerId)onlineSendAction({type:'requestRaise',value});return;}return _originalRequestRaise(playerId,value);};
+counterRaise=function(playerId,value){if(onlineMode&&onlineRole!=="host"){if(playerId===localPlayerId)onlineSendAction({type:'counterRaise',value});return;}return _originalCounterRaise(playerId,value);};
+respondRaise=function(decision){if(onlineMode&&onlineRole!=="host"){onlineSendAction({type:'respondRaise',decision});return;}return _originalRespondRaise(decision);};
+playBlind=function(playerId=0){if(onlineMode&&onlineRole!=="host")return false;return _originalPlayBlind(playerId);};
+acceptSpecialHand=function(){if(onlineMode&&onlineRole!=="host"){onlineSendAction({type:'acceptSpecialHand'});return;}return _originalAcceptSpecialHand();};
+runSpecialHand=function(){if(onlineMode&&onlineRole!=="host"){onlineSendAction({type:'runSpecialHand'});return;}return _originalRunSpecialHand();};
 
 const _originalStartGame=startGame;
 startGame=function(){
