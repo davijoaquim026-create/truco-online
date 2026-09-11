@@ -457,6 +457,10 @@ function getHandElementForPlayer(playerId){
  return document.getElementById("hand"+handId);
 }
 function renderHands(){
+  if(onlineMode){
+  renderOnlineHands();
+  return;
+}
  const humanPlayer=getPlayer(0);
  const partnerPlayer=humanPlayer
    ? gameState.players.find(player=>player.team===humanPlayer.team && player.id!==humanPlayer.id)
