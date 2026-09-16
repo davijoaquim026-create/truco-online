@@ -766,6 +766,11 @@ function requestRaise(playerId,value){
   log(`${name} pediu ${value===getRules().raises[1]?"TRUCO":value+"!"}`);
   animateFlash(value===getRules().raises[1]?"🔥 TRUCO!":"⚡ "+value+"!");beep("truco");playRaiseVoice(value);
   status(`${name} pediu ${value===getRules().raises[1]?"TRUCO":value+"!"}`);renderActions();
+  
+  if(onlineMode){
+  broadcastOnlineState();
+  return;
+}
   // A resposta pertence SEMPRE ao time adversário de quem fez o pedido.
   // Nunca usamos o ID do jogador que pediu para decidir quem responde.
   if(gameState.raiseTeam===1){
@@ -785,6 +790,11 @@ function counterRaise(playerId,value){
   rememberAIAction("raise",playerId,value);
   log(`${name} aumentou para ${value}.`);animateFlash("⚡ "+value+"!");beep("truco");playRaiseVoice(value);
   status(`${name} pediu ${value}!`);renderActions();
+  
+  if(onlineMode){
+  broadcastOnlineState();
+  return;
+}
   // Depois de um aumento, a resposta passa para o time adversário de quem aumentou.
   if(gameState.raiseTeam===1){
     // O time adversário é o time dos Bots (João/Zé).
@@ -1113,8 +1123,17 @@ function respondRaise(decision){
     if(responderId!==null)rememberAIAction("accept",responderId,value);
     gameState.handValue=value;gameState.raisePending=false;
     log("Aumento aceito.");toast("Aumento aceito!");
-    renderActions();status(gameState.turn===0?"🟢 Sua vez":`${gameState.players[gameState.turn].name} está pensando...`);
-    if(gameState.turn!==0)setTimeout(aiTurn,thinkDelay());
+    renderActions();
+
+status(
+  gameState.turn===localPlayerId
+    ?"🟢 Sua vez"
+    :`${gameState.players[gameState.turn].name} está pensando...`
+);
+
+if(!onlineMode && gameState.turn!==0){
+  setTimeout(aiTurn,thinkDelay());
+}
   }else if(decision==="run"){
     if(responderId!==null)rememberAIAction("run",responderId,value);
     const winnerTeam=gameState.players[gameState.raisingBy].team;
