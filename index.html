@@ -1137,7 +1137,7 @@ if(!onlineMode && gameState.turn!==0){
   }else if(decision==="run"){
     if(responderId!==null)rememberAIAction("run",responderId,value);
     const winnerTeam=gameState.players[gameState.raisingBy].team;
-    const awarded=gameState.handValue;
+const awarded=gameState.handValue;
     gameState.raisePending=false;gameState.phase="handEnd";gameState.scores[winnerTeam]+=awarded;
     renderScores();log(`A dupla adversária correu. A mão valeu ${awarded} ponto(s).`);
     status(`${winnerTeam===0?"Sua dupla":"Dupla adversária"} levou ${awarded} ponto(s).`);
