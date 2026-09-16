@@ -760,7 +760,7 @@ function requestRaise(playerId,value){
   if(!canRaiseTruco(playerId,value))return;
   const proposerTeam=gameState.players[playerId].team;
   gameState.raisePending=true;gameState.raisingBy=playerId;gameState.targetValue=value;
-  gameState.raiseTeam=1-proposerTeam;
+  gameState.raiseTeam=1-proposerTeam;gameState.respondingPlayerId=nextTablePlayer(playerId);
   const name=gameState.players[playerId].name;
   rememberAIAction("raise",playerId,value);
   log(`${name} pediu ${value===getRules().raises[1]?"TRUCO":value+"!"}`);
@@ -785,7 +785,7 @@ function counterRaise(playerId,value){
   if(gameState.phase!=="play"||!gameState.raisePending)return;
   if(gameState.players[playerId].team!==gameState.raiseTeam)return;
   if(value!==nextRaise(gameState.targetValue))return;
-  gameState.raisingBy=playerId;gameState.targetValue=value;gameState.raiseTeam=1-gameState.players[playerId].team;
+  gameState.raisingBy=playerId;gameState.targetValue=value;gameState.raiseTeam=1-gameState.players[playerId].team;gameState.respondingPlayerId=nextTablePlayer(playerId);
   const name=gameState.players[playerId].name;
   rememberAIAction("raise",playerId,value);
   log(`${name} aumentou para ${value}.`);animateFlash("⚡ "+value+"!");beep("truco");playRaiseVoice(value);
@@ -1137,7 +1137,9 @@ if(!onlineMode && gameState.turn!==0){
   }else if(decision==="run"){
     if(responderId!==null)rememberAIAction("run",responderId,value);
     const winnerTeam=gameState.players[gameState.raisingBy].team;
-const awarded=gameState.handValue;
+const sequence=getTrucoSequence();
+const pos=sequence.indexOf(value);
+const awarded=pos>0 ? sequence[pos-1] : getRules().runAward;
     gameState.raisePending=false;gameState.phase="handEnd";gameState.scores[winnerTeam]+=awarded;
     renderScores();log(`A dupla adversária correu. A mão valeu ${awarded} ponto(s).`);
     status(`${winnerTeam===0?"Sua dupla":"Dupla adversária"} levou ${awarded} ponto(s).`);
