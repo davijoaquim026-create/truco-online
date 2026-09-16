@@ -1515,7 +1515,180 @@ function renderOnlineHands(){const map=getOnlineSeatPlayerIds();document.querySe
   };
 });}
 function onlineSendAction(action){if(onlineSocket?.connected)onlineSocket.emit('action',{...action,playerId:localPlayerId});}
-function renderOnlineActions(){const a=document.getElementById('actions');a.innerHTML='';document.getElementById('blindBtn')?.classList.add('hidden');if(['matchEnd','handEnd','waiting'].includes(gameState.phase))return;if(gameState.phase==='specialDecision'&&gameState.specialTeam===gameState.players[localPlayerId]?.team){const m=document.getElementById('modal'),c=document.getElementById('modalCard');m.classList.remove('hidden');c.innerHTML='<h2>⚠️ MÃO ESPECIAL</h2><p>Sua dupla está com '+getRules().special+' pontos.</p><div class="choice-row"><button class="action" id="spA">JOGAR</button><button class="action" id="spR">CORRER</button></div>';document.getElementById('spA').onclick=()=>onlineSendAction({type:'acceptSpecialHand'});document.getElementById('spR').onclick=()=>onlineSendAction({type:'runSpecialHand'});return;}if(gameState.raisePending){if(gameState.raiseTeam===gameState.players[localPlayerId]?.team){const accept=document.createElement('button');accept.className='action';accept.textContent='ACEITAR';accept.onclick=()=>onlineSendAction({type:'respondRaise',decision:'accept'});const run=document.createElement('button');run.className='action';run.textContent='CORRER';run.onclick=()=>onlineSendAction({type:'respondRaise',decision:'run'});a.append(accept,run);const next=nextRaise(gameState.targetValue);if(next){const up=document.createElement('button');up.className='action';up.textContent='AUMENTAR';up.onclick=()=>onlineSendAction({type:'counterRaise',value:next});a.append(up);}}return;}if(gameState.turn!==localPlayerId)return;if(canCallTruco(localPlayerId)){const nv=nextRaise(gameState.handValue);const b=document.createElement('button');b.className='action';b.textContent=nv===getRules().raises[1]?'TRUCO':String(nv);b.onclick=()=>onlineSendAction({type:'requestRaise',value:nv});a.appendChild(b);}}
+function renderOnlineActions(){
+  const a=document.getElementById("actions");
+  a.innerHTML="";
+
+  const blind=document.getElementById("blindBtn");
+  if(blind)blind.classList.add("hidden");
+
+  // Fim da partida ou sala ainda esperando jogadores.
+  if(
+    gameState.phase==="matchEnd" ||
+    gameState.phase==="handEnd" ||
+    gameState.phase==="waiting"
+  ){
+    return;
+  }
+
+  const localTeam=gameState.players[localPlayerId]?.team;
+
+  // =========================================================
+  // MÃO ESPECIAL
+  // =========================================================
+  if(
+    gameState.phase==="specialDecision" &&
+    gameState.specialTeam===localTeam
+  ){
+    const m=document.getElementById("modal");
+    const c=document.getElementById("modalCard");
+
+    m.classList.remove("hidden");
+
+    const enviar=action=>{
+      if(onlineRole==="host"){
+        if(action==="acceptSpecialHand"){
+          _originalAcceptSpecialHand();
+        }else{
+          _originalRunSpecialHand();
+        }
+        broadcastOnlineState();
+      }else{
+        onlineSendAction({type:action});
+      }
+    };
+
+    c.innerHTML=`
+      <h2>⚠️ MÃO ESPECIAL</h2>
+      <p>Sua dupla está com ${getRules().special} pontos.</p>
+
+      <div class="choice-row">
+        <button class="action" id="specialAccept">JOGAR</button>
+        <button class="action" id="specialRun">CORRER</button>
+      </div>
+    `;
+
+    document.getElementById("specialAccept").onclick=
+      ()=>enviar("acceptSpecialHand");
+
+    document.getElementById("specialRun").onclick=
+      ()=>enviar("runSpecialHand");
+
+    return;
+  }
+
+  // =========================================================
+  // RESPOSTA AO TRUCO / 6 / 9 / 12
+  // =========================================================
+  if(gameState.raisePending){
+
+    // Somente a dupla que está respondendo recebe os botões.
+    if(gameState.raiseTeam!==localTeam){
+      return;
+    }
+
+    const responderId=localPlayerId;
+
+    const enviarResposta=decision=>{
+      if(onlineRole==="host"){
+        gameState.respondingPlayerId=responderId;
+        _originalRespondRaise(decision);
+        broadcastOnlineState();
+      }else{
+        onlineSendAction({
+          type:"respondRaise",
+          decision
+        });
+      }
+    };
+
+    const enviarAumento=value=>{
+      if(!value)return;
+
+      if(onlineRole==="host"){
+        _originalCounterRaise(responderId,value);
+        broadcastOnlineState();
+      }else{
+        onlineSendAction({
+          type:"counterRaise",
+          value
+        });
+      }
+    };
+
+    // ACEITAR
+    const accept=document.createElement("button");
+    accept.className="action";
+    accept.textContent="ACEITAR";
+    accept.onclick=()=>enviarResposta("accept");
+
+    // CORRER
+    const run=document.createElement("button");
+    run.className="action";
+    run.textContent="CORRER";
+    run.onclick=()=>enviarResposta("run");
+
+    a.append(accept,run);
+
+    // AUMENTAR
+    const next=nextRaise(gameState.targetValue);
+
+    if(next){
+      const up=document.createElement("button");
+      up.className="action";
+
+      up.textContent=
+        next===getRules().raises[1]
+          ?"TRUCO"
+          :String(next);
+
+      up.onclick=()=>enviarAumento(next);
+
+      a.append(up);
+    }
+
+    return;
+  }
+
+  // =========================================================
+  // PEDIR TRUCO / 6 / 9 / 12
+  // =========================================================
+  if(gameState.turn!==localPlayerId){
+    return;
+  }
+
+  if(canCallTruco(localPlayerId)){
+
+    const next=nextRaise(gameState.handValue);
+
+    if(next){
+
+      const b=document.createElement("button");
+      b.className="action";
+
+      b.textContent=
+        next===getRules().raises[1]
+          ?"TRUCO"
+          :String(next);
+
+      b.onclick=()=>{
+
+        if(onlineRole==="host"){
+          _originalRequestRaise(localPlayerId,next);
+          broadcastOnlineState();
+        }else{
+          onlineSendAction({
+            type:"requestRaise",
+            value:next
+          });
+        }
+
+      };
+
+      a.appendChild(b);
+    }
+  }
+}
 function showVictoryOnline(team){gameState.phase='matchEnd';const m=document.getElementById('modal'),c=document.getElementById('modalCard');m.classList.remove('hidden');c.innerHTML=`<h2 style="font-size:42px;text-align:center">🏆 VITÓRIA!</h2><p style="text-align:center;font-size:22px">${team===gameState.players[localPlayerId]?.team?'Sua dupla venceu!':'A dupla adversária venceu!'}</p><p style="text-align:center">A partida chegou a 12 pontos.</p><button class="menu-btn" onclick="location.reload()">VOLTAR AO MENU</button>`;}
 const _originalPlayCard=playCard;
 const _originalRequestRaise=requestRaise;
